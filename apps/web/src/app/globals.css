@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-ink antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  ::selection {
+    background: rgba(0, 162, 255, 0.28);
+    color: #f8fafc;
+  }
+
+  *:focus-visible {
+    outline: 2px solid rgba(0, 162, 255, 0.55);
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #020617;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #1e293b;
+    border: 2px solid #020617;
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #334155;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded border border-line bg-surface-1;
+  }
+
+  .panel-raised {
+    @apply rounded border border-line-strong bg-surface-2;
+  }
+
+  .hairline {
+    @apply border-line;
+  }
+
+  .meta {
+    @apply font-mono text-label-sm uppercase tracking-[0.08em] text-ink-dim;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .row-hover {
+    @apply transition-colors hover:bg-surface-1;
+  }
+
+  .divider-y > * + * {
+    @apply border-t border-line;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .grid-noise {
+    background-image:
+      linear-gradient(rgba(51, 65, 85, 0.18) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(51, 65, 85, 0.18) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+}

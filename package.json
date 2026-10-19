@@ -1,0 +1,15 @@
+{
+  "name": "robloxops",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm --workspace apps/web run dev",
+    "build": "npm --workspace apps/web run build",
+    "start": "npm --workspace apps/web run start",
+    "typecheck": "npm --workspace apps/web run typecheck",
+    "worker:dev": "py -3 -m uvicorn app.main:app --reload --app-dir apps/worker",
+    "worker:bot": "py -3 apps/worker/bot.py"
+  }
+}
