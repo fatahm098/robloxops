@@ -24,12 +24,13 @@ apps/worker              Python 3.12 FastAPI worker + Discord bot + queue runner
   app/handlers/          intake, brief, qa, revision
   app/discord.py         Discord REST sender (bot token)
   app/outbound.py        outbound queue + human-approval delivery
+  app/secrets.py         per-tenant secrets (Supabase Vault) reads
   app/routing.py         least-loaded designer assignment
   app/followups.py       follow-up persistence + sending (rate-limited)
   app/reports.py         report persistence helpers
   app/queue.py           Postgres queue client
   runner.py              queue consumer + follow-up cron sweep
-supabase/migrations      0001..0011 (schema, RLS, jobs, provisioning, billing, storage, revisions, followups, reports, outbound/takeover)
+supabase/migrations      0001..0012 (schema, RLS, jobs, provisioning, billing, storage, revisions, followups, reports, outbound/takeover, tenant secrets)
 docs/                    DATABASE.md, AUTH.md, BILLING.md, HANDOFF.md
 ```
 
@@ -62,7 +63,7 @@ Worker API / bot / queue consumer (see apps/worker/README.md):
    pattern (`src/app/(dashboard)/settings/actions.ts`): `createClient()` +
    `getAuthSession()`, validate, write, `revalidatePath`, then return a
    `{ ok, message }` result. Do not introduce a new state layer.
-4. **Migrations are append-only.** New files: `0012_*.sql`, etc. Never edit an
+4. **Migrations are append-only.** New files: `0013_*.sql`, etc. Never edit an
    applied migration. 0006 replaces the `claim_jobs` function signature.
 5. **No secrets in the repo.** Copy `.env.example` files; never commit keys.
 6. **Structured LLM output only.** Worker handlers validate with Pydantic;
@@ -74,7 +75,7 @@ Worker API / bot / queue consumer (see apps/worker/README.md):
 
 - `npm --workspace apps/web run typecheck`
 - `npm --workspace apps/web run build`
-- worker `pytest` (82 tests currently) + `compileall`
+- worker `pytest` (97 tests currently) + `compileall`
 
 ## Where things are going
 

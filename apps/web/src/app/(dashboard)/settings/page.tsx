@@ -3,16 +3,28 @@ import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Home, Link2, MessageSquare, ShieldAlert } from "lucide-react";
 
 import { DeleteWorkspaceButton } from "@/components/settings/delete-workspace-button";
+import { IntegrationsForm } from "@/components/settings/integrations-form";
 import { SettingsForm } from "@/components/settings/settings-form";
 import { isDemoMode } from "@/lib/data";
+import { listSecretStatuses } from "@/lib/secrets";
+import { asRecord } from "@/lib/supabase/mappers";
 import { getTenantSettings } from "@/lib/tenant";
 
 export const metadata: Metadata = {
   title: "Studio Settings — RobloxOps",
 };
 
+function readModel(settings: Record<string, unknown>, key: string): string {
+  const llm = asRecord(asRecord(settings.integrations).llm);
+  const value = llm[key];
+  return typeof value === "string" ? value : "";
+}
+
 export default async function SettingsPage() {
-  const tenant = await getTenantSettings();
+  const [tenant, secretStatuses] = await Promise.all([
+    getTenantSettings(),
+    listSecretStatuses(),
+  ]);
 
   const rawTone = tenant.settings.tone;
   const tone =
@@ -131,6 +143,17 @@ export default async function SettingsPage() {
           </div>
         </dl>
 
+        <p className="mt-3 rounded border border-line bg-canvas px-3 py-2 text-[11px] leading-relaxed text-ink-dim">
+          <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-muted">
+            Note:
+          </span>{" "}
+          The Discord bot token is platform-global — it is set once via the worker
+          <code className="mx-1 font-mono text-ink-muted">.env</code>
+          <code className="mr-1 font-mono text-ink-muted">DISCORD_BOT_TOKEN</code>
+          and is not stored per tenant. Per-tenant Discord is the guild connection below;
+          use the connect action to link or relink a server.
+        </p>
+
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Link
             href="/api/discord/authorize"
@@ -157,6 +180,16 @@ export default async function SettingsPage() {
           approvalMode,
           maxRevisions,
           aiPaused: tenant.aiPaused,
+        }}
+      />
+
+      <IntegrationsForm
+        demoMode={isDemoMode}
+        statuses={secretStatuses}
+        models={{
+          modelFast: readModel(tenant.settings, "model_fast"),
+          modelMid: readModel(tenant.settings, "model_mid"),
+          modelVision: readModel(tenant.settings, "model_vision"),
         }}
       />
 

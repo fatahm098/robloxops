@@ -3,12 +3,70 @@
 import { revalidatePath } from "next/cache";
 
 import { isDemoMode } from "@/lib/data";
+import { deleteTenantSecret, isSecretKey, setTenantSecret } from "@/lib/secrets";
+import { asRecord } from "@/lib/supabase/mappers";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient, getAuthSession } from "@/lib/supabase/server";
 
 export interface SettingsState {
   ok: boolean;
   message: string;
+}
+
+interface TenantSession {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  tenantId: string;
+  userId: string;
+}
+
+/**
+ * Resolves the verified session. `tenantId`/`userId` come from the JWT, never
+ * from request input.
+ */
+async function requireTenant(): Promise<TenantSession | null> {
+  const supabase = await createClient();
+  const session = await getAuthSession(supabase);
+  if (!session?.tenantId) return null;
+  return { supabase, tenantId: session.tenantId, userId: session.userId };
+}
+
+/**
+ * Reads `tenants.settings`, applies `patch`, and writes it back so unrelated
+ * keys (tone, timezone, …) are preserved.
+ */
+async function mergeTenantSettings(
+  patch: (existing: Record<string, unknown>) => Record<string, unknown>,
+): Promise<SettingsState> {
+  try {
+    const context = await requireTenant();
+    if (!context) {
+      return { ok: false, message: "Session expired. Sign in again." };
+    }
+
+    const { supabase, tenantId } = context;
+    const { data: tenant, error: readError } = await supabase
+      .from("tenants")
+      .select("settings")
+      .eq("id", tenantId)
+      .single();
+
+    if (readError) throw readError;
+
+    const settings = patch(asRecord(tenant?.settings));
+
+    const { error } = await supabase
+      .from("tenants")
+      .update({ settings })
+      .eq("id", tenantId);
+
+    if (error) throw error;
+
+    revalidatePath("/settings");
+    return { ok: true, message: "Settings saved." };
+  } catch (error) {
+    console.error("[settings] settings merge failed", error);
+    return { ok: false, message: "Could not save settings. Try again." };
+  }
 }
 
 export async function updateSettings(
@@ -167,4 +225,146 @@ export async function deleteWorkspaceData(confirmation: string): Promise<Setting
     console.error("[settings] workspace delete failed", error);
     return { ok: false, message: "Could not delete workspace data. Try again." };
   }
+}
+
+export interface IntegrationSecretInput {
+  keyName: string;
+  value: string;
+}
+
+function validateSecretValue(keyName: string, value: string): string | null {
+  if (value.length < 1 || value.length > 4096) {
+    return "Secret must be between 1 and 4096 characters.";
+  }
+  if (keyName === "LLM_BASE_URL") {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        return "Base URL must start with http:// or https://.";
+      }
+    } catch {
+      return "Base URL must be a valid http(s) URL.";
+    }
+  }
+  return null;
+}
+
+/** Stores an integration secret via the service-role RPC. Never logs the value. */
+export async function saveIntegrationSecret(
+  input: IntegrationSecretInput,
+): Promise<SettingsState> {
+  if (isDemoMode) {
+    return {
+      ok: false,
+      message: "Integrations are disabled in demo mode — connect Supabase to store keys.",
+    };
+  }
+
+  const keyName = String(input?.keyName ?? "");
+  if (!isSecretKey(keyName)) {
+    return { ok: false, message: "Unknown integration key." };
+  }
+
+  const value = String(input?.value ?? "");
+  const invalid = validateSecretValue(keyName, value);
+  if (invalid) {
+    return { ok: false, message: invalid };
+  }
+
+  try {
+    const context = await requireTenant();
+    if (!context) {
+      return { ok: false, message: "Session expired. Sign in again." };
+    }
+
+    await setTenantSecret(context.tenantId, keyName, value, context.userId);
+    revalidatePath("/settings");
+    return { ok: true, message: "Key saved." };
+  } catch (error) {
+    console.error("[settings] secret save failed", keyName, error);
+    return { ok: false, message: "Could not save the key. Try again." };
+  }
+}
+
+export async function clearIntegrationSecret(input: {
+  keyName: string;
+}): Promise<SettingsState> {
+  if (isDemoMode) {
+    return {
+      ok: false,
+      message: "Integrations are disabled in demo mode — connect Supabase to manage keys.",
+    };
+  }
+
+  const keyName = String(input?.keyName ?? "");
+  if (!isSecretKey(keyName)) {
+    return { ok: false, message: "Unknown integration key." };
+  }
+
+  try {
+    const context = await requireTenant();
+    if (!context) {
+      return { ok: false, message: "Session expired. Sign in again." };
+    }
+
+    await deleteTenantSecret(context.tenantId, keyName);
+    revalidatePath("/settings");
+    return { ok: true, message: "Key cleared." };
+  } catch (error) {
+    console.error("[settings] secret clear failed", keyName, error);
+    return { ok: false, message: "Could not clear the key. Try again." };
+  }
+}
+
+export interface LlmModelInput {
+  modelFast?: string;
+  modelMid?: string;
+  modelVision?: string;
+}
+
+const LLM_MODEL_MAX_LENGTH = 120;
+
+/** Merges non-secret model names into `tenants.settings.integrations.llm`. */
+export async function saveLlmModels(input: LlmModelInput): Promise<SettingsState> {
+  if (isDemoMode) {
+    return {
+      ok: false,
+      message: "Model settings are disabled in demo mode — connect Supabase to persist.",
+    };
+  }
+
+  const models: Record<string, string> = {};
+  const entries: Array<[string, string | undefined]> = [
+    ["model_fast", input?.modelFast],
+    ["model_mid", input?.modelMid],
+    ["model_vision", input?.modelVision],
+  ];
+
+  for (const [key, raw] of entries) {
+    if (raw === undefined) continue;
+    const value = raw.trim();
+    if (value.length > LLM_MODEL_MAX_LENGTH) {
+      return { ok: false, message: "Model names must be 120 characters or fewer." };
+    }
+    models[key] = value;
+  }
+
+  return mergeTenantSettings((existing) => {
+    const integrations = asRecord(existing.integrations);
+    const llm = { ...asRecord(integrations.llm) };
+
+    for (const [key] of entries) {
+      if (!(key in models)) continue;
+      if (models[key]) {
+        llm[key] = models[key];
+      } else {
+        delete llm[key];
+      }
+    }
+
+    return {
+      ...existing,
+      integrations: { ...integrations, llm },
+    };
+  });
 }

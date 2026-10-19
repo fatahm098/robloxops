@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
+import type Stripe from "stripe";
 
 import type { PlanId } from "@/lib/types";
+import { isDemoMode } from "@/lib/data";
 import { createClient, getAuthSession } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { getStripe, getAppUrl } from "@/lib/stripe";
+import { getStripeForTenant, getAppUrl } from "@/lib/stripe";
 import { priceIdFor } from "@/lib/plans";
 
 const VALID: PlanId[] = ["starter", "growth", "pro"];
 
 export async function POST(request: Request) {
-  if (!process.env.STRIPE_SECRET_KEY) {
+  if (isDemoMode) {
     return NextResponse.json({ error: "Stripe is not configured." }, { status: 503 });
   }
 
@@ -33,6 +35,13 @@ export async function POST(request: Request) {
     );
   }
 
+  let stripe: Stripe;
+  try {
+    stripe = await getStripeForTenant(session.tenantId);
+  } catch {
+    return NextResponse.json({ error: "Stripe is not configured." }, { status: 503 });
+  }
+
   const admin = createAdminClient();
   const { data: tenant } = await admin
     .from("tenants")
@@ -42,7 +51,6 @@ export async function POST(request: Request) {
 
   let stripeCustomerId = (tenant?.stripe_customer_id as string | null) ?? null;
 
-  const stripe = getStripe();
   if (!stripeCustomerId) {
     const customer = await stripe.customers.create({
       email: session.email ?? undefined,

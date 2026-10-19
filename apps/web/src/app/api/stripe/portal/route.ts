@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
+import type Stripe from "stripe";
 
+import { isDemoMode } from "@/lib/data";
 import { createClient, getAuthSession } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { getStripe, getAppUrl } from "@/lib/stripe";
+import { getStripeForTenant, getAppUrl } from "@/lib/stripe";
 
 export async function POST() {
-  if (!process.env.STRIPE_SECRET_KEY) {
+  if (isDemoMode) {
     return NextResponse.json({ error: "Stripe is not configured." }, { status: 503 });
   }
 
@@ -27,7 +29,13 @@ export async function POST() {
     return NextResponse.json({ error: "No billing customer yet." }, { status: 400 });
   }
 
-  const stripe = getStripe();
+  let stripe: Stripe;
+  try {
+    stripe = await getStripeForTenant(session.tenantId);
+  } catch {
+    return NextResponse.json({ error: "Stripe is not configured." }, { status: 503 });
+  }
+
   const portal = await stripe.billingPortal.sessions.create({
     customer: stripeCustomerId,
     return_url: `${getAppUrl()}/billing`,

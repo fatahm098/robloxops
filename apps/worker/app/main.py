@@ -18,7 +18,7 @@ from app.handlers.brief import handle_continue
 from app.handlers.intake import handle_intake
 from app.handlers.qa import run_qa
 from app.handlers.revision import create_revision
-from app.llm import LLMError, LLMProtocol, get_llm as build_llm
+from app.llm import LLMError, build_llm_for_tenant, get_llm
 from app.outbound import (
     approve_outbound,
     reject_outbound,
@@ -80,8 +80,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("DATABASE_URL is empty — endpoints that touch the DB will return 503")
 
     app.state.db = db
-    app.state.llm = build_llm(settings)
-    logger.info("llm backend: %s", type(app.state.llm).__name__)
+    app.state.llm = get_llm(settings)
+    logger.info("default llm backend: %s", type(app.state.llm).__name__)
     try:
         yield
     finally:
@@ -117,10 +117,6 @@ def get_db(request: Request) -> Database:
     return db
 
 
-def get_llm(request: Request) -> LLMProtocol:
-    return request.app.state.llm
-
-
 router = APIRouter(dependencies=[Depends(require_internal_token)])
 
 
@@ -137,8 +133,8 @@ async def health() -> dict[str, Any]:
 async def intake(
     body: IntakeRequest,
     db: Database = Depends(get_db),
-    llm: LLMProtocol = Depends(get_llm),
 ) -> IntakeResult:
+    llm = await build_llm_for_tenant(db, body.tenant_id, get_settings())
     try:
         return await handle_intake(db, llm, body)
     except ValueError as exc:
@@ -149,8 +145,8 @@ async def intake(
 async def conversation_continue(
     body: ContinueRequest,
     db: Database = Depends(get_db),
-    llm: LLMProtocol = Depends(get_llm),
 ) -> ContinueResult:
+    llm = await build_llm_for_tenant(db, body.tenant_id, get_settings())
     try:
         return await handle_continue(db, llm, body)
     except ValueError as exc:
@@ -161,8 +157,8 @@ async def conversation_continue(
 async def qa_check(
     body: QARequest,
     db: Database = Depends(get_db),
-    llm: LLMProtocol = Depends(get_llm),
 ) -> dict[str, Any]:
+    llm = await build_llm_for_tenant(db, body.tenant_id, get_settings())
     try:
         report = await run_qa(db, llm, body.tenant_id, body.deliverable_id)
     except ValueError as exc:
@@ -175,8 +171,8 @@ async def qa_check(
 async def followup_run(
     body: FollowUpRequest,
     db: Database = Depends(get_db),
-    llm: LLMProtocol = Depends(get_llm),
 ) -> dict[str, Any]:
+    llm = await build_llm_for_tenant(db, body.tenant_id, get_settings())
     tenant = await db.fetch_tenant(body.tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="unknown tenant")
@@ -242,8 +238,8 @@ async def followup_run(
 async def report_generate(
     body: ReportRequest,
     db: Database = Depends(get_db),
-    llm: LLMProtocol = Depends(get_llm),
 ) -> ReportResult:
+    llm = await build_llm_for_tenant(db, body.tenant_id, get_settings())
     row = await db.fetchrow(body.tenant_id, REPORT_SQL, body.tenant_id, body.project_id)
     if row is None:
         raise HTTPException(status_code=404, detail="unknown project")

@@ -30,6 +30,7 @@ data with a demo fallback. Follow-up *sending*, email and realtime are not done 
 | Follow-up sending (1/24h, max 3 → escalate) + cron sweep | done |
 | Dashboard live wiring (overview values, billing, settings, onboarding steps, sidebar badges, project filters) | done |
 | CI (GitHub Actions: typecheck/build + pytest/compileall) | done |
+| Per-tenant API keys (Supabase Vault) + per-tenant LLM/Stripe | done |
 | Designer notifications, payments/Robux, realtime | not started |
 
 Current state and the prioritized remaining backlog live in
@@ -122,7 +123,7 @@ Endpoints: `POST /intake`, `/conversation/continue`, `/qa/check`, `/followup/run
 `/report/generate`, `GET /health`. All but `/health` require
 `Authorization: Bearer $INTERNAL_WORKER_TOKEN`.
 
-Tests: `PYTHONPATH=apps/worker .venv/Scripts/python -m pytest tests -q` (82 passing,
+Tests: `PYTHONPATH=apps/worker .venv/Scripts/python -m pytest tests -q` (97 passing,
 no network, no database).
 
 ## Discord setup

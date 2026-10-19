@@ -25,7 +25,7 @@ from app.handlers import escalate_if_ai_paused
 from app.handlers.brief import handle_continue
 from app.handlers.intake import handle_intake
 from app.handlers.qa import run_qa
-from app.llm import LLMError, get_llm
+from app.llm import LLMError, build_llm_for_tenant, get_llm
 from app.models import ContinueRequest, IntakeRequest
 from app.queue import Job, claim_jobs, complete_job, fail_job, reap_stale_jobs
 
@@ -43,12 +43,22 @@ def _payload(job: Job) -> dict[str, Any]:
 
 
 async def dispatch(db: Database, llm: Any, job: Job) -> bool:
-    """Run one job. Returns ``False`` when the kind is unsupported (already failed)."""
+    """Run one job. Returns ``False`` when the kind is unsupported (already failed).
+
+    ``llm`` is only a fallback: each job resolves the tenant's own LLM config
+    (Vault key + model overrides) so tenants never share a process-wide key.
+    """
+    try:
+        tenant_llm = await build_llm_for_tenant(db, job.tenant_id, get_settings())
+    except Exception:  # noqa: BLE001 - a bad secret must not fail the job outright
+        logger.exception("tenant llm resolution failed for job %s", job.id)
+        tenant_llm = llm
+
     payload = _payload(job)
     if job.kind == "intake":
-        await handle_intake(db, llm, IntakeRequest(**payload))
+        await handle_intake(db, tenant_llm, IntakeRequest(**payload))
     elif job.kind == "conversation_continue":
-        await handle_continue(db, llm, ContinueRequest(**payload))
+        await handle_continue(db, tenant_llm, ContinueRequest(**payload))
     elif job.kind == "qa_check":
         # qa.run_qa has no ai_paused short-circuit (unlike intake/brief), so a
         # paused tenant would otherwise still run vision/LLM QA here.
@@ -62,7 +72,7 @@ async def dispatch(db: Database, llm: Any, job: Job) -> bool:
             entity_id=deliverable_id,
         ):
             return True
-        await run_qa(db, llm, UUID(str(job.tenant_id)), deliverable_id)
+        await run_qa(db, tenant_llm, UUID(str(job.tenant_id)), deliverable_id)
     else:
         logger.warning("unsupported job kind %r for job %s", job.kind, job.id)
         await fail_job(db.pool, job.id, f"unsupported job kind: {job.kind}")
@@ -116,7 +126,7 @@ async def run_forever() -> None:
         raise SystemExit("DATABASE_URL is required to run the queue consumer")
 
     db = await Database.connect(settings.database_url)
-    llm = get_llm(settings)
+    fallback_llm = get_llm(settings)
     worker_id = settings.worker_id or "worker-1"
     stop = asyncio.Event()
 
@@ -148,7 +158,7 @@ async def run_forever() -> None:
             logger.exception("initial follow-up sweep failed")
         iterations = 0
         while not stop.is_set():
-            processed = await run_once(db, llm, worker_id, settings.worker_batch_size)
+            processed = await run_once(db, fallback_llm, worker_id, settings.worker_batch_size)
             iterations += 1
             if iterations % REAP_EVERY_ITERATIONS == 0:
                 await _reap()

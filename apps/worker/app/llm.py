@@ -53,12 +53,21 @@ def _validate(model: type[BaseModel], data: Any) -> Any:
 class OpenAICompatibleLLM:
     """Minimal chat-completions client; works with OpenAI, DeepSeek, vLLM, etc."""
 
-    def __init__(self, settings: Settings) -> None:
-        self._base_url = settings.llm_base_url.rstrip("/")
-        self._api_key = settings.llm_api_key
-        self._model_fast = settings.llm_model_fast
-        self._model_mid = settings.llm_model_mid
-        self._model_vision = settings.llm_model_vision
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model_fast: str | None = None,
+        model_mid: str | None = None,
+        model_vision: str | None = None,
+    ) -> None:
+        self._base_url = (base_url or settings.llm_base_url).rstrip("/")
+        self._api_key = api_key or settings.llm_api_key
+        self._model_fast = model_fast or settings.llm_model_fast
+        self._model_mid = model_mid or settings.llm_model_mid
+        self._model_vision = model_vision or settings.llm_model_vision
         self._timeout = settings.llm_timeout_seconds
 
     async def _chat(
@@ -359,7 +368,38 @@ class FakeLLM:
         return "\n".join(lines)
 
 
-def get_llm(settings: Settings) -> LLMProtocol:
-    if not settings.llm_enabled:
+def get_llm(
+    settings: Settings,
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model_fast: str | None = None,
+    model_mid: str | None = None,
+    model_vision: str | None = None,
+) -> LLMProtocol:
+    """Build the LLM client, optionally overriding the process-wide settings.
+
+    ``api_key or settings.llm_api_key`` decides Fake vs real, so a tenant with a
+    stored key gets the real client while a tenant without one keeps demo mode.
+    """
+    effective_key = api_key or settings.llm_api_key
+    if not effective_key:
         return FakeLLM()
-    return OpenAICompatibleLLM(settings)
+    return OpenAICompatibleLLM(
+        settings,
+        api_key=api_key,
+        base_url=base_url,
+        model_fast=model_fast,
+        model_mid=model_mid,
+        model_vision=model_vision,
+    )
+
+
+async def build_llm_for_tenant(
+    db: Any, tenant_id: Any, settings: Settings
+) -> LLMProtocol:
+    """Resolve the tenant's LLM overrides (Vault + settings) and build a client."""
+    from app.secrets import tenant_llm_overrides  # local import avoids a cycle
+
+    overrides = await tenant_llm_overrides(db, tenant_id)
+    return get_llm(settings, **overrides)

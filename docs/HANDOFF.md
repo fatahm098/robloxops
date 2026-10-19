@@ -22,6 +22,8 @@ in the working tree**. Nothing has been committed since that scaffold.
 | Reports table + RLS + worker persistence | done (0010) |
 | Outbound Discord delivery (worker → Discord REST) | done (0011, `app/discord.py`) |
 | Human-approval outbound queue + per-project takeover | done (0011) |
+| Per-tenant integration secrets in Supabase Vault | done (0012, `app/secrets.py`) |
+| Per-tenant LLM key resolved by the worker | done this session |
 | Follow-up sending (bot/Discord send, 1/24h + max 3 → escalate) | done this session |
 | Tenant billing period (`tenants.current_period_end`) | done (0005) |
 | FastAPI worker: intake, brief, QA, follow-up, report | implemented AND persisting (follow-ups, reports) |
@@ -43,7 +45,7 @@ in the working tree**. Nothing has been committed since that scaffold.
 ## Verify (current results)
 
 ```powershell
-$env:PYTHONPATH="apps/worker"; & "apps/worker/.venv/Scripts/python.exe" -m pytest apps/worker/tests -q   # 82 passed
+$env:PYTHONPATH="apps/worker"; & "apps/worker/.venv/Scripts/python.exe" -m pytest apps/worker/tests -q   # 97 passed
 & "apps/worker/.venv/Scripts/python.exe" -m compileall -q apps/worker                                     # clean
 npm --workspace apps/web run typecheck                                                                    # clean
 npm --workspace apps/web run build                                                                        # 23 pages, OK
@@ -268,6 +270,36 @@ Built in two waves by parallel agents; gates run on the merged tree (**82 tests,
 - `.github/workflows/ci.yml` (NEW) — `web` (npm ci → typecheck → build) and `worker`
   (pip install → pytest → compileall) jobs on push/PR.
 
+## Completed in the 2026-10-19 session (per-tenant secrets + LLM)
+
+Goal: let an operator set API keys from the dashboard instead of only env files.
+
+- `supabase/migrations/0012_tenant_secrets.sql` — `tenant_secrets` (metadata +
+  `last4` only; RLS select for the tenant, no write policies) plus
+  `public.set_tenant_secret` / `delete_tenant_secret` / `get_tenant_secret`
+  SECURITY DEFINER functions backed by **Supabase Vault**, granted to
+  `service_role` only. Degrades to raising stubs when Vault is absent (worker then
+  falls back to env).
+- `apps/worker/app/secrets.py` (NEW) — `get_tenant_secret`, `tenant_llm_overrides`.
+- `apps/worker/app/llm.py` — `get_llm(settings, *, api_key, base_url, model_fast,
+  model_mid, model_vision)` + `build_llm_for_tenant(db, tenant_id, settings)`.
+- `app/main.py` + `runner.py` — resolve the LLM **per tenant** (tenant key →
+  env `LLM_API_KEY` fallback; offline ⇒ `FakeLLM`). `/health` still reports the
+  process default.
+- Web: `lib/secrets.ts` (`listSecretStatuses`, `setTenantSecret`,
+  `deleteTenantSecret`, `readTenantSecret`); Settings gains an
+  **Integrations / API Keys** section (`components/settings/integrations-form.tsx`)
+  with masked inputs for `LLM_API_KEY`, `LLM_BASE_URL`, `STRIPE_SECRET_KEY`,
+  `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY` + model overrides; `DISCORD_BOT_TOKEN`
+  is shown as platform-global (env) by design.
+- Stripe per tenant: `getStripeForTenant(tenantId)` reads the vaulted
+  `STRIPE_SECRET_KEY` (env fallback); checkout/portal resolve it from the session
+  tenant. Webhook signature secret stays env-global.
+
+> Discord bot token and the internal worker token remain **global infra** (one
+> gateway bot process, one web↔worker shared secret); only guild connection is
+> per tenant.
+
 ## Remaining backlog (prioritized)
 
 ### P0 — correctness / completeness of the MVP workflow
@@ -321,12 +353,14 @@ status mutation (`updateTaskStatus` + `TaskStatusMenu`). Files:
 
 ## Environment setup checklist (not in repo — required to run live)
 
-- **Supabase**: create project, apply migrations `0001`→`0011` in order
+- **Supabase**: create project, apply migrations `0001`→`0012` in order
   (`supabase db push`), load `supabase/seed.sql` (`supabase db reset`), configure
   the `tenant_id` JWT claim (see `docs/AUTH.md`), create the `deliverables`
-  bucket (0007 does this). Web env: `NEXT_PUBLIC_SUPABASE_URL`,
-  `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`,
-  `INTERNAL_WORKER_TOKEN`.
+  bucket (0007 does this), and ensure the **Vault** extension is available
+  (0012). Web env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+  `SUPABASE_SERVICE_ROLE_KEY`, `INTERNAL_WORKER_TOKEN`.
+  Per-tenant LLM/Stripe keys are set in **Settings → Integrations** (Vault) and
+  override the env values.
 - **Stripe** (optional): `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
   `STRIPE_PRICE_STARTER/_GROWTH/_PRO`, `NEXT_PUBLIC_APP_URL` (see `docs/BILLING.md`).
 - **Worker** (`apps/worker/.env`): `DATABASE_URL`, `INTERNAL_WORKER_TOKEN`,
