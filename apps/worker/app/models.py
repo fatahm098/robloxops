@@ -14,7 +14,7 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _BLANK_LINES = re.compile(r"\n{4,}")
 
 IntentLabel = Literal["commission_request", "general_question", "other"]
-ProjectType = Literal["clothing", "accessory", "avatar_item", "game_asset", "unknown"]
+ProjectType = Literal["clothing", "accessory", "avatar_item", "game_asset", "other"]
 
 
 def sanitize_inbound_text(text: str, max_chars: int = MAX_INBOUND_CHARS) -> str:
@@ -62,7 +62,7 @@ class BriefSchema(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    project_type: ProjectType = "unknown"
+    project_type: ProjectType = "other"
     title: str = Field(default="", max_length=120)
     style: str = Field(default="", max_length=200)
     colors: list[str] = Field(default_factory=list, max_length=12)
@@ -78,7 +78,9 @@ class BriefSchema(BaseModel):
     def _is_filled(self, field: str) -> bool:
         value = getattr(self, field)
         if field == "project_type":
-            return value != "unknown"
+            # "other" is the DB-valid fallback and carries no classification,
+            # so it does not earn completeness points.
+            return value != "other"
         if isinstance(value, list):
             return len(value) > 0
         return bool(str(value).strip())
@@ -94,21 +96,24 @@ class ProjectDraft(BaseModel):
     """Minimal project metadata derived before the DB row is written."""
 
     title: str = Field(min_length=1, max_length=120)
-    project_type: ProjectType = "unknown"
+    project_type: ProjectType = "other"
     customer_discord_id: str
     customer_username: str = ""
     summary: str = Field(default="", max_length=500)
 
 
-class QAChecklistItem(BaseModel):
-    requirement: str = Field(max_length=200)
-    status: Literal["confirmed", "missing", "uncertain"]
-    note: str = Field(default="", max_length=300)
+class QACheck(BaseModel):
+    """One QA check in the shape the web UI renders (label / value / passed)."""
+
+    label: str = Field(max_length=200)
+    value: str = Field(default="", max_length=300)
+    passed: bool = False
 
 
 class QAReport(BaseModel):
-    items: list[QAChecklistItem] = Field(default_factory=list)
+    checks: list[QACheck] = Field(default_factory=list)
     score: int = Field(ge=0, le=100)
+    max_score: int = Field(default=100, ge=0)
     summary: str = Field(default="", max_length=1000)
 
 
@@ -153,6 +158,14 @@ class FollowUpRequest(BaseModel):
 class ReportRequest(BaseModel):
     tenant_id: UUID
     project_id: UUID
+    kind: Literal["delivery", "qa", "summary"] = "delivery"
+
+
+class RevisionCreateRequest(BaseModel):
+    tenant_id: UUID
+    project_id: UUID
+    requested_by: str | None = None
+    reason: str
 
 
 class IntakeResult(BaseModel):
@@ -183,9 +196,11 @@ class FollowUpDraft(BaseModel):
     reference_code: str
     message: str
     hours_since_update: int
+    followup_id: UUID | None = None
 
 
 class ReportResult(BaseModel):
     project_id: UUID
     reference_code: str
     markdown: str
+    report_id: UUID | None = None

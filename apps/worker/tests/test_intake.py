@@ -167,6 +167,7 @@ async def test_commission_creates_customer_project_and_brief() -> None:
     assert len(db.projects) == 1
     assert db.projects[0]["tenant_id"] == TENANT_ID
     assert db.projects[0]["status"] == "intake"
+    assert db.projects[0]["project_type"] == "other"
     assert len(db.briefs) == 1
     assert db.audits[-1]["status"] == "success"
     assert db.seen["msg-1"]["project_id"] == result.project_id
@@ -214,6 +215,26 @@ async def test_invalid_llm_output_escalates_without_writing_data() -> None:
     assert db.briefs == []
     assert db.audits[-1]["status"] == "escalated"
     assert "validation failed" in db.audits[-1]["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_ai_paused_records_message_and_audit_without_llm() -> None:
+    class NoCallLLM(FakeLLM):
+        async def classify_intent(self, text: str, tenant_name: str = "the studio") -> Any:
+            raise AssertionError("LLM must not be called while paused")
+
+    db = FakeDB()
+    db.tenant_row["settings"] = {"tone": "friendly", "ai_paused": True}
+
+    result = await handle_intake(db, NoCallLLM(), _request())
+
+    assert result.status == "escalated"
+    assert result.reply == ""
+    assert db.projects == []
+    assert db.briefs == []
+    assert "msg-1" in db.seen
+    assert db.audits[-1]["action"] == "ai_paused"
+    assert db.audits[-1]["status"] == "escalated"
 
 
 @pytest.mark.asyncio

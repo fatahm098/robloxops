@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { RefreshCw } from "lucide-react";
 
 import type { TeamLoad } from "@/lib/types";
@@ -55,13 +56,13 @@ export function TeamAllocation({ loads }: { loads: TeamLoad[] }) {
       </ul>
 
       <div className="px-4 pb-4">
-        <button
-          type="button"
+        <Link
+          href="/tasks"
           className="inline-flex h-11 w-full items-center justify-center gap-2 rounded border border-line-strong text-body-md font-medium text-ink transition-colors hover:border-brand hover:bg-surface-2"
         >
           <RefreshCw size={14} aria-hidden="true" />
           Rebalance Task Queue
-        </button>
+        </Link>
       </div>
     </section>
   );

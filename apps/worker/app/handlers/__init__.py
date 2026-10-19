@@ -7,7 +7,7 @@ from uuid import UUID
 
 import asyncpg
 
-from app.db import require_tenant_id
+from app.db import json_dict, require_tenant_id
 
 AuditStatus = Literal["success", "failure", "escalated"]
 
@@ -35,6 +35,15 @@ def summarize(value: Any, limit: int = 200) -> str:
     """Collapse whitespace and truncate. Never pass raw customer text here."""
     text = " ".join(str(value or "").split())
     return text[:limit]
+
+
+def is_ai_paused(tenant: dict[str, Any]) -> bool:
+    """Emergency stop: ``tenants.settings.ai_paused`` (defaults to False).
+
+    When true no handler may call an LLM or send a Discord reply; it may still
+    record the inbound message and an audit row so nothing is lost.
+    """
+    return json_dict(tenant.get("settings")).get("ai_paused") is True
 
 
 async def log_audit(
@@ -118,3 +127,36 @@ async def escalate(
         entity_id=entity_id,
         error_message=error,
     )
+
+
+async def escalate_if_ai_paused(
+    db: Any,
+    tenant_id: UUID,
+    *,
+    agent_name: str,
+    action: str,
+    entity_type: str | None = None,
+    entity_id: UUID | None = None,
+) -> bool:
+    """Return True when the tenant has paused AI, after an ``escalated`` audit row.
+
+    Handlers that take inbound messages (intake, brief) short-circuit on
+    ``ai_paused`` themselves because they also have to record the message. This
+    guard is for job kinds whose handler does not (e.g. QA): the queue consumer
+    calls it before invoking the handler so a paused tenant never runs LLM work.
+    """
+    tenant = await db.fetch_tenant(tenant_id)
+    if tenant is None:
+        raise ValueError(f"unknown tenant {tenant_id}")
+    if not is_ai_paused(tenant):
+        return False
+    await escalate(
+        db,
+        tenant_id,
+        agent_name=agent_name,
+        action=action,
+        error="ai_paused=true",
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
+    return True

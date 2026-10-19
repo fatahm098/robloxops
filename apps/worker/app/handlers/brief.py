@@ -6,7 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from app.db import json_dict
-from app.handlers import escalate, log_inbound
+from app.handlers import escalate, is_ai_paused, log_audit, log_inbound
 from app.llm import LLMError, LLMProtocol
 from app.models import (
     BriefRefreshResult,
@@ -54,7 +54,13 @@ ON CONFLICT (project_id) DO UPDATE SET
 
 PROJECT_STATUS_SQL = """
 UPDATE projects
-SET status = CASE WHEN status = 'intake' THEN 'briefing' ELSE status END,
+SET status = CASE
+        WHEN status = 'intake' THEN 'briefing'
+        -- A message arriving after the customer has seen or received the work
+        -- is a revision request; other active states stay put.
+        WHEN status IN ('customer_review', 'delivered', 'approved') THEN 'revision'
+        ELSE status
+    END,
     updated_at = NOW()
 WHERE tenant_id = $1 AND id = $2
 """
@@ -145,8 +151,26 @@ async def handle_continue(db: Any, llm: LLMProtocol, req: ContinueRequest) -> Co
     )
     if inserted is None:
         return ContinueResult(status="duplicate", project_id=project_id)
+
+    if is_ai_paused(tenant):
+        await log_audit(
+            db,
+            tenant_id,
+            agent_name=AGENT_NAME,
+            action="ai_paused",
+            status="escalated",
+            entity_type="project",
+            entity_id=project_id,
+            input_summary="ai_paused=true",
+            output_summary="message recorded; no AI or Discord action taken",
+        )
+        return ContinueResult(status="escalated", project_id=project_id)
+
     if project_id is None:
         return ContinueResult(status="no_project")
+
+    # Captured before refresh: refresh_brief may advance the status to revision.
+    status_before = project["status"] if project is not None else None
 
     refreshed = await refresh_brief(db, llm, tenant_id, project_id)
     if refreshed is None:
@@ -155,6 +179,8 @@ async def handle_continue(db: Any, llm: LLMProtocol, req: ContinueRequest) -> Co
     tone = str(json_dict(tenant["settings"]).get("tone", "friendly"))
     context: dict[str, Any] = {"missing_fields": refreshed.missing_fields}
     purpose = "clarification" if refreshed.missing_fields else "brief_updated"
+    if status_before in ("customer_review", "delivered", "approved"):
+        purpose = "revision"
     try:
         reply = await llm.draft_message(
             tenant_name=str(tenant["name"]), purpose=purpose, context=context, tone=tone

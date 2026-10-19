@@ -23,6 +23,9 @@ PostgreSQL 15 / Supabase. Shared schema, `tenant_id` on every tenant-owned row, 
 | `conversations` | Discord message log, unique `(tenant_id, discord_message_id)` | yes |
 | `agent_audit_log` | Append-only agent action/cost log | yes |
 | `tasks` | Designer queue | yes |
+| `revisions` | Customer revision requests (0008) | yes |
+| `followups` | Persisted follow-up drafts/sends (0009) | yes |
+| `reports` | Generated reports, unique `(tenant_id, project_id, kind)` (0010) | yes |
 | `jobs` | Queue rows (see below) | yes |
 
 ### UI type mapping

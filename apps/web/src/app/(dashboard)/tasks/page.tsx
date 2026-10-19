@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Plus } from "lucide-react";
 
+import { CreateTaskDialog, type ProjectOption } from "@/components/tasks/create-task-dialog";
 import { TaskBoard } from "@/components/tasks/task-board";
-import { listTasks } from "@/lib/data";
+import { isDemoMode, listProjects, listTasks } from "@/lib/data";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
@@ -12,7 +12,11 @@ export const metadata: Metadata = {
 };
 
 export default async function TasksPage() {
-  const tasks = await listTasks();
+  const [tasks, projects] = await Promise.all([listTasks(), listProjects()]);
+
+  const projectOptions: ProjectOption[] = projects
+    .filter((project) => project.status !== "delivered" && project.status !== "cancelled")
+    .map((project) => ({ id: project.id, reference: project.reference, title: project.title }));
 
   const inProgress = tasks.filter((task) => task.status === "in_progress").length;
   const pending = tasks.filter((task) => task.status === "pending").length;
@@ -52,13 +56,7 @@ export default async function TasksPage() {
             </span>
             <span className="tabular text-status-review">2 Due Today</span>
           </span>
-          <button
-            type="button"
-            className="inline-flex h-11 items-center gap-1.5 rounded border border-brand bg-brand px-3.5 text-[13px] font-semibold text-canvas transition-colors hover:bg-brand-bright hover:shadow-focus"
-          >
-            <Plus aria-hidden className="h-4 w-4" strokeWidth={2.5} />
-            New Task
-          </button>
+          <CreateTaskDialog projects={projectOptions} disabled={isDemoMode} />
         </div>
       </header>
 
@@ -77,7 +75,7 @@ export default async function TasksPage() {
         ))}
       </section>
 
-      <TaskBoard tasks={tasks} />
+      <TaskBoard tasks={tasks} disabled={isDemoMode} />
     </div>
   );
 }

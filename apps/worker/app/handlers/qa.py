@@ -37,11 +37,17 @@ async def run_qa(
         raise ValueError(f"unknown deliverable {deliverable_id}")
 
     brief = json_dict(row["structured_data"])
+    file_path = row["file_path"]
     deliverable = {
-        "file_path": row["file_path"],
+        "file_path": file_path,
         "file_type": row["file_type"],
         "project_title": row["title"],
     }
+    # Vision QA only runs when a genuinely reachable URL is available. Storage
+    # paths are private bucket keys that need a signed URL the worker cannot
+    # mint here, so we only forward file_path when it already is a URL.
+    if isinstance(file_path, str) and file_path.startswith(("http://", "https://")):
+        deliverable["url"] = file_path
 
     try:
         report = await llm.qa_check(brief, deliverable)

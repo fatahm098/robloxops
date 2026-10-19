@@ -125,6 +125,9 @@ export interface OverviewStats {
   revenueUsd: number;
   revenueRobux: number;
   revenueDelta: number;
+  qaCheck: number;
+  inDesign: number;
+  highPriorityOpen: number;
 }
 
 export type StudioEventKind = "agent" | "human" | "billing" | "client";
@@ -160,4 +163,96 @@ export interface Task {
 export interface ProjectFilters {
   status?: ProjectStatus | "all";
   search?: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* CRM, deliverables, revisions, billing, analytics, agents           */
+/* ------------------------------------------------------------------ */
+
+export type CustomerState = "active" | "idle" | "new";
+
+export interface CustomerSummary extends Customer {
+  activeProjects: number;
+  totalSpentUsd: number;
+  lastOrderAt: string;
+  state: CustomerState;
+}
+
+export interface DeliverableRow {
+  id: string;
+  projectId: string;
+  reference: string;
+  projectTitle: string;
+  name: string;
+  fileType: string;
+  sizeLabel: string;
+  version: number;
+  qaStatus: QaStatus;
+  uploadedBy: string;
+  uploadedAt: string;
+  isFinal: boolean;
+}
+
+export type RevisionStatus = "open" | "in_progress" | "resolved" | "rejected";
+
+export interface RevisionRequest {
+  id: string;
+  projectId: string;
+  reference: string;
+  projectTitle: string;
+  requestedBy: string;
+  reason: string;
+  status: RevisionStatus;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+export type PlanId = "starter" | "growth" | "pro";
+
+export interface BillingPlan {
+  id: PlanId;
+  name: string;
+  priceUsd: number;
+  projectsPerMonth: number;
+  aiCreditsUsd: number;
+  discordServers: number;
+  features: string[];
+}
+
+export interface UsagePoint {
+  label: string;
+  projects: number;
+  revenueUsd: number;
+}
+
+export type AgentState = "active" | "paused" | "error";
+
+export interface AgentStatus {
+  id: string;
+  name: string;
+  role: string;
+  state: AgentState;
+  model: string;
+  actions24h: number;
+  costUsd: number;
+  lastRunAt: string;
+  description: string;
+}
+
+export type AuditStatus = "success" | "failure" | "escalated";
+
+export interface AuditTableRow {
+  id: string;
+  time: string;
+  date: string;
+  agent: string;
+  model: string;
+  action: string;
+  entity: string;
+  entityHref?: string;
+  tokensIn: number;
+  tokensOut: number;
+  costUsd: number;
+  durationMs: number;
+  status: AuditStatus;
 }

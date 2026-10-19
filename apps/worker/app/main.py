@@ -12,11 +12,14 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request,
 
 from app.config import get_settings
 from app.db import Database, json_dict
+from app.followups import run_followup
 from app.handlers import log_audit
 from app.handlers.brief import handle_continue
 from app.handlers.intake import handle_intake
 from app.handlers.qa import run_qa
+from app.handlers.revision import create_revision
 from app.llm import LLMError, LLMProtocol, get_llm as build_llm
+from app.reports import persist_report
 from app.models import (
     ContinueRequest,
     ContinueResult,
@@ -27,6 +30,7 @@ from app.models import (
     QARequest,
     ReportRequest,
     ReportResult,
+    RevisionCreateRequest,
 )
 
 logger = logging.getLogger("robloxops.worker")
@@ -190,12 +194,26 @@ async def followup_run(
             )
         except LLMError:
             message = f"Quick check-in on {row['reference_code']} — anything you'd like to update?"
+        followup = await run_followup(
+            db,
+            body.tenant_id,
+            kind="nudge",
+            project_id=row["id"],
+            status="pending",
+            payload={
+                "reference_code": row["reference_code"],
+                "message": message,
+                "hours_since_update": hours,
+            },
+            model_used=type(llm).__name__,
+        )
         drafts.append(
             FollowUpDraft(
                 project_id=row["id"],
                 reference_code=row["reference_code"],
                 message=message,
                 hours_since_update=hours,
+                followup_id=followup["id"],
             )
         )
 
@@ -243,11 +261,46 @@ async def report_generate(
         output_summary=f"chars={len(markdown)}",
         model_used=type(llm).__name__,
     )
+
+    report_id = None
+    if body.project_id is not None:
+        stored = await persist_report(
+            db,
+            body.tenant_id,
+            body.project_id,
+            body.kind,
+            markdown,
+            payload={
+                "reference_code": row["reference_code"],
+                "status": row["status"],
+                "model_used": type(llm).__name__,
+            },
+        )
+        report_id = stored["id"]
+
     return ReportResult(
         project_id=body.project_id,
         reference_code=row["reference_code"],
         markdown=markdown,
+        report_id=report_id,
     )
+
+
+@router.post("/revision/create")
+async def revision_create(
+    body: RevisionCreateRequest,
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return await create_revision(
+            db,
+            body.tenant_id,
+            body.project_id,
+            body.requested_by,
+            body.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 app.include_router(router)

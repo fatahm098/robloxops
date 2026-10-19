@@ -10,18 +10,26 @@ Planning source: `../roblox-studio-saas-plan.md`. UI reference:
 ## Status
 
 Milestone 1 ("bot hears and records") is implemented end-to-end in code and runs in
-demo mode without credentials. Billing, revisions, follow-ups and QA vision are
-scaffolded but not production-ready.
+demo mode without credentials. The core workflow (intake, brief, QA, revisions,
+follow-ups, report persistence, Discord OAuth) is wired; every dashboard surface
+(overview, billing, settings, onboarding, projects filters, sidebar) now reads live
+data with a demo fallback. Follow-up *sending*, email and realtime are not done yet.
 
 | Area | State |
 |---|---|
 | Postgres schema, RLS, per-tenant reference codes | done |
 | Postgres job queue (`claim_jobs` / `complete_job` / `fail_job`) | done |
-| FastAPI worker: intake, brief, QA, follow-up, report | done (LLM optional) |
-| Discord bot: channel monitoring, threads, slash commands | done, needs a real guild |
-| Next.js dashboard: overview, projects, detail, tasks, audit | done |
-| tRPC API + Supabase auth context + signed uploads | done |
-| Stripe billing, onboarding OAuth, revision workflow | not started |
+| FastAPI worker: intake, brief, QA, follow-up, report | done (LLM optional), follow-ups/reports persist |
+| Discord bot: channel monitoring, threads, slash commands (`/status` `/brief` `/revision` `/help`) | done, needs a real guild |
+| Next.js dashboard: overview, projects, detail, tasks, audit, customers, deliverables, revisions, agents, analytics, billing, settings, onboarding | done |
+| tRPC API + Supabase auth context + signed uploads | tRPC scaffolded but unused; uploads live |
+| Stripe billing, auth UI, onboarding, agent pause | done |
+| Revision workflow, follow-up/report persistence, Discord OAuth callback | done |
+| Dashboard live wiring (overview values, billing, settings, onboarding steps, sidebar badges, project filters) | done |
+| Follow-up sending, email, realtime | not started |
+
+Current state and the prioritized remaining backlog live in
+[`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 ## Architecture
 
@@ -110,7 +118,7 @@ Endpoints: `POST /intake`, `/conversation/continue`, `/qa/check`, `/followup/run
 `/report/generate`, `GET /health`. All but `/health` require
 `Authorization: Bearer $INTERNAL_WORKER_TOKEN`.
 
-Tests: `PYTHONPATH=apps/worker .venv/Scripts/python -m pytest tests -q` (20 passing,
+Tests: `PYTHONPATH=apps/worker .venv/Scripts/python -m pytest tests -q` (53 passing,
 no network, no database).
 
 ## Discord setup
@@ -176,7 +184,7 @@ crimson `#A21A24`. Inter for UI, JetBrains Mono for references, asset IDs and co
 
 ## Known gaps
 
-- No auth UI yet: signup/login screens and tenant provisioning are not built; the
-  dashboard runs on demo data or an already-authenticated session.
-- Stripe, Discord OAuth onboarding, revision workflow, email notifications, analytics.
-- RLS policies assume a `tenant_id` JWT claim; configure the auth hook before launch.
+See [`docs/HANDOFF.md`](docs/HANDOFF.md) for the full, prioritized list. Summary:
+follow-up *sending* (bot send + rate limits), email and realtime, and the unused
+tRPC layer. RLS policies assume a `tenant_id` JWT claim; configure the auth hook
+before launch.

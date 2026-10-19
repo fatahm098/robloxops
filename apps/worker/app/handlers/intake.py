@@ -6,7 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from app.db import json_dict
-from app.handlers import escalate, log_audit, log_inbound
+from app.handlers import escalate, is_ai_paused, log_audit, log_inbound
 from app.llm import LLMError, LLMProtocol
 from app.models import (
     IntakeRequest,
@@ -71,6 +71,30 @@ async def handle_intake(db: Any, llm: LLMProtocol, req: IntakeRequest) -> Intake
     tenant = await db.fetch_tenant(tenant_id)
     if tenant is None:
         raise ValueError(f"unknown tenant {tenant_id}")
+
+    if is_ai_paused(tenant):
+        await log_inbound(
+            db,
+            tenant_id,
+            project_id=None,
+            customer_id=None,
+            channel_id=req.channel_id,
+            message_id=req.message_id,
+            content=content,
+            author_id=req.author_id,
+        )
+        await log_audit(
+            db,
+            tenant_id,
+            agent_name=AGENT_NAME,
+            action="ai_paused",
+            status="escalated",
+            entity_type="conversation",
+            input_summary="ai_paused=true",
+            output_summary="message recorded; no AI or Discord action taken",
+        )
+        return IntakeResult(status="escalated", intent="other")
+
     tenant_name = str(tenant["name"])
     tone = str(json_dict(tenant["settings"]).get("tone", "friendly"))
 
@@ -134,7 +158,7 @@ async def handle_intake(db: Any, llm: LLMProtocol, req: IntakeRequest) -> Intake
 
     draft = ProjectDraft(
         title=_fallback_title(content),
-        project_type="unknown",
+        project_type="other",
         customer_discord_id=req.author_id,
         customer_username=req.author_name,
     )
@@ -144,7 +168,7 @@ async def handle_intake(db: Any, llm: LLMProtocol, req: IntakeRequest) -> Intake
         tenant_id,
         customer_id,
         draft.title,
-        None if draft.project_type == "unknown" else draft.project_type,
+        draft.project_type,
         req.thread_id,
     )
     project_id = project["id"]

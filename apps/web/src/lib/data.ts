@@ -1,5 +1,7 @@
 import { getMockProject, overviewStats, projects, studioEvents, tasks, teamLoads } from "./mock";
 import type {
+  CustomerSummary,
+  DeliverableRow,
   OverviewStats,
   ProjectDetail,
   ProjectFilters,
@@ -15,6 +17,7 @@ import {
   CONVERSATION_SELECT,
   PROJECT_SELECT,
   TASK_SELECT,
+  asNumber,
   first,
   initialsOf,
   mapAuditEntry,
@@ -59,9 +62,11 @@ export const demoTenant: TenantContext = {
   errorCount: 0,
 };
 
-interface DataContext {
+export interface DataContext {
   supabase: SupabaseServerClient;
   tenantId: string;
+  userId: string;
+  email: string | null;
 }
 
 const UUID_PATTERN =
@@ -69,7 +74,7 @@ const UUID_PATTERN =
 
 const INACTIVE_STATUSES: ProjectStatus[] = ["delivered", "cancelled"];
 
-async function readContext(): Promise<DataContext> {
+export async function readContext(): Promise<DataContext> {
   const supabase = await createClient();
   const session = await getAuthSession(supabase);
 
@@ -80,14 +85,19 @@ async function readContext(): Promise<DataContext> {
     throw new Error("Authenticated user has no tenant_id claim");
   }
 
-  return { supabase, tenantId: session.tenantId };
+  return {
+    supabase,
+    tenantId: session.tenantId,
+    userId: session.userId,
+    email: session.email,
+  };
 }
 
 /**
  * Runs a Supabase read. Errors are always logged; in development the caller's
  * mock result is returned so the UI stays usable, while production rethrows.
  */
-async function withFallback<T>(
+export async function withFallback<T>(
   scope: string,
   run: () => Promise<T>,
   fallback: () => T | Promise<T>,
@@ -112,6 +122,7 @@ function demoOverview() {
       ["qa_check", "in_design", "customer_review", "briefing"].includes(p.status),
     ),
     qaReady: projects.find((p) => p.reference === "ROB-104") ?? projects[0],
+    viewerName: "Alex",
   };
 }
 
@@ -187,7 +198,7 @@ export async function getOverview() {
   return withFallback<ReturnType<typeof demoOverview>>(
     "getOverview",
     async () => {
-      const { supabase, tenantId } = await readContext();
+      const { supabase, tenantId, userId, email } = await readContext();
 
       const [projectResult, taskResult, auditResult, userResult] = await Promise.all([
         supabase
@@ -195,7 +206,10 @@ export async function getOverview() {
           .select(PROJECT_SELECT)
           .eq("tenant_id", tenantId)
           .order("updated_at", { ascending: false }),
-        supabase.from("tasks").select("id,status,due_at").eq("tenant_id", tenantId),
+        supabase
+          .from("tasks")
+          .select("id,status,due_at,priority")
+          .eq("tenant_id", tenantId),
         supabase
           .from("agent_audit_log")
           .select(AUDIT_SELECT)
@@ -215,6 +229,7 @@ export async function getOverview() {
         id: string;
         status: string | null;
         due_at: string | null;
+        priority: number | string | null;
       }>;
       const auditRows = (auditResult.data ?? []) as unknown as AuditLogRow[];
       const userRows = (userResult.data ?? []) as unknown as UserRow[];
@@ -242,7 +257,21 @@ export async function getOverview() {
         revenueUsd: paid.reduce((total, project) => total + (project.priceUsd ?? 0), 0),
         revenueRobux: paid.reduce((total, project) => total + (project.priceRobux ?? 0), 0),
         revenueDelta: 0,
+        qaCheck: summaries.filter((project) => project.status === "qa_check").length,
+        inDesign: summaries.filter((project) => project.status === "in_design").length,
+        highPriorityOpen: taskRows.filter(
+          (task) =>
+            (task.status === "pending" || task.status === "in_progress") &&
+            Number(task.priority ?? 0) >= 2,
+        ).length,
       };
+
+      const viewer = userRows.find((user) => user.id === userId);
+      const viewerName =
+        viewer?.display_name?.trim() ||
+        email?.split("@")[0] ||
+        viewer?.email?.split("@")[0] ||
+        "Alex";
 
       const events: StudioEvent[] = auditRows.map((row) => {
         const entry = mapAuditEntry(row);
@@ -283,6 +312,7 @@ export async function getOverview() {
         teamLoads: loads,
         urgent,
         qaReady: summaries.find((project) => project.status === "qa_check") ?? summaries[0],
+        viewerName,
       };
     },
     demoOverview,
@@ -428,5 +458,239 @@ export async function getStatusCounts(): Promise<Record<ProjectStatus | "all", n
       return counts;
     },
     demoStatusCounts,
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* CRM + deliverables                                                  */
+/* ------------------------------------------------------------------ */
+
+const ACTIVE_STATUSES: ProjectStatus[] = [
+  "intake",
+  "briefing",
+  "brief_review",
+  "in_design",
+  "qa_check",
+  "customer_review",
+  "revision",
+  "approved",
+];
+
+function demoListCustomers(search?: string): CustomerSummary[] {
+  const byCustomer = new Map<string, CustomerSummary>();
+
+  for (const project of projects) {
+    const key = project.customer.id;
+    const existing = byCustomer.get(key);
+    const isActive = ACTIVE_STATUSES.includes(project.status);
+
+    if (!existing) {
+      byCustomer.set(key, {
+        ...project.customer,
+        activeProjects: isActive ? 1 : 0,
+        totalSpentUsd: project.paymentStatus === "paid" ? (project.priceUsd ?? 0) : 0,
+        lastOrderAt: project.updatedAt,
+        state: project.customer.orderCount === 0 ? "new" : isActive ? "active" : "idle",
+      });
+      continue;
+    }
+
+    existing.activeProjects += isActive ? 1 : 0;
+    existing.totalSpentUsd += project.paymentStatus === "paid" ? (project.priceUsd ?? 0) : 0;
+    if (project.updatedAt > existing.lastOrderAt) {
+      existing.lastOrderAt = project.updatedAt;
+      existing.state = project.customer.orderCount === 0 ? "new" : isActive ? "active" : "idle";
+    }
+  }
+
+  const term = search?.trim().toLowerCase();
+  return [...byCustomer.values()]
+    .filter((customer) => {
+      if (!term) return true;
+      return (
+        customer.displayName.toLowerCase().includes(term) ||
+        customer.discordUsername.toLowerCase().includes(term) ||
+        customer.tier?.toLowerCase().includes(term)
+      );
+    })
+    .sort((a, b) => b.totalSpentUsd - a.totalSpentUsd);
+}
+
+export async function listCustomers(search?: string): Promise<CustomerSummary[]> {
+  if (isDemoMode) return demoListCustomers(search);
+
+  return withFallback<CustomerSummary[]>(
+    "listCustomers",
+    async () => {
+      const { supabase, tenantId } = await readContext();
+
+      const [customerResult, projectResult] = await Promise.all([
+        supabase
+          .from("customers")
+          .select("id, display_name, discord_username, discord_user_id, total_projects, created_at")
+          .eq("tenant_id", tenantId)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("projects")
+          .select("customer_id, status, payment_status, price_usd, updated_at")
+          .eq("tenant_id", tenantId),
+      ]);
+
+      if (customerResult.error) throw customerResult.error;
+      if (projectResult.error) throw projectResult.error;
+
+      const rows = (customerResult.data ?? []) as unknown as Array<{
+        id: string;
+        display_name: string | null;
+        discord_username: string | null;
+        discord_user_id: string;
+        total_projects: number | null;
+        created_at: string | null;
+      }>;
+
+      const projectRows = (projectResult.data ?? []) as unknown as Array<{
+        customer_id: string;
+        status: string | null;
+        payment_status: string | null;
+        price_usd: number | string | null;
+        updated_at: string | null;
+      }>;
+
+      // Aggregate `projects` per customer the same way `demoListCustomers` does:
+      // open projects, lifetime paid spend and the most recent order timestamp.
+      interface CustomerTotals {
+        activeProjects: number;
+        totalSpentUsd: number;
+        lastOrderAt: string | null;
+      }
+
+      const totals = new Map<string, CustomerTotals>();
+
+      for (const project of projectRows) {
+        const current =
+          totals.get(project.customer_id) ??
+          ({ activeProjects: 0, totalSpentUsd: 0, lastOrderAt: null } satisfies CustomerTotals);
+
+        if (ACTIVE_STATUSES.includes(toProjectStatus(project.status))) {
+          current.activeProjects += 1;
+        }
+        if (project.payment_status === "paid") {
+          current.totalSpentUsd += asNumber(project.price_usd) ?? 0;
+        }
+        if (
+          project.updated_at &&
+          (!current.lastOrderAt || project.updated_at > current.lastOrderAt)
+        ) {
+          current.lastOrderAt = project.updated_at;
+        }
+
+        totals.set(project.customer_id, current);
+      }
+
+      const summaries: CustomerSummary[] = rows.map((row) => {
+        const orderCount = row.total_projects ?? 0;
+        const total = totals.get(row.id);
+        const activeProjects = total?.activeProjects ?? 0;
+
+        return {
+          id: row.id,
+          displayName: row.display_name ?? row.discord_username ?? row.discord_user_id,
+          discordUsername: row.discord_username ?? row.discord_user_id,
+          discordId: row.discord_user_id,
+          orderCount,
+          activeProjects,
+          totalSpentUsd: total?.totalSpentUsd ?? 0,
+          lastOrderAt: total?.lastOrderAt ?? row.created_at ?? new Date().toISOString(),
+          state: orderCount === 0 ? "new" : activeProjects > 0 ? "active" : "idle",
+        };
+      });
+
+      const term = search?.trim().toLowerCase();
+      return term
+        ? summaries.filter(
+            (customer) =>
+              customer.displayName.toLowerCase().includes(term) ||
+              customer.discordUsername.toLowerCase().includes(term),
+          )
+        : summaries;
+    },
+    () => demoListCustomers(search),
+  );
+}
+
+function demoListDeliverables(): DeliverableRow[] {
+  const rows: DeliverableRow[] = [];
+
+  for (const project of projects) {
+    const detail = getMockProject(project.id);
+    if (!detail) continue;
+
+    for (const item of detail.deliverables) {
+      rows.push({
+        id: item.id,
+        projectId: project.id,
+        reference: project.reference,
+        projectTitle: project.title,
+        name: item.name,
+        fileType: item.fileType,
+        sizeLabel: item.sizeLabel,
+        version: item.version,
+        qaStatus: item.qaStatus,
+        uploadedBy: item.uploadedBy,
+        uploadedAt: item.uploadedAt,
+        isFinal: item.isFinal,
+      });
+    }
+  }
+
+  return rows.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+}
+
+export async function listDeliverables(): Promise<DeliverableRow[]> {
+  if (isDemoMode) return demoListDeliverables();
+
+  return withFallback<DeliverableRow[]>(
+    "listDeliverables",
+    async () => {
+      const { supabase, tenantId } = await readContext();
+      const { data, error } = await supabase
+        .from("deliverables")
+        .select(
+          "id, project_id, version, file_path, file_type, file_size_bytes, is_final, qa_status, created_at, projects(reference_code, title)",
+        )
+        .eq("tenant_id", tenantId)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+
+      const rows = (data ?? []) as unknown as Array<{
+        id: string;
+        project_id: string;
+        version: number;
+        file_path: string;
+        file_type: string | null;
+        file_size_bytes: number | null;
+        is_final: boolean;
+        qa_status: string | null;
+        created_at: string;
+        projects: { reference_code: string; title: string | null } | null;
+      }>;
+
+      return rows.map((row) => ({
+        id: row.id,
+        projectId: row.project_id,
+        reference: row.projects?.reference_code ?? "—",
+        projectTitle: row.projects?.title ?? "Untitled",
+        name: row.file_path.split("/").pop() ?? row.file_path,
+        fileType: (row.file_type ?? "bin").toUpperCase(),
+        sizeLabel: row.file_size_bytes ? `${(row.file_size_bytes / 1_048_576).toFixed(1)} MB` : "—",
+        version: row.version,
+        qaStatus: (row.qa_status ?? "pending") as DeliverableRow["qaStatus"],
+        uploadedBy: "—",
+        uploadedAt: row.created_at,
+        isFinal: row.is_final,
+      }));
+    },
+    demoListDeliverables,
   );
 }

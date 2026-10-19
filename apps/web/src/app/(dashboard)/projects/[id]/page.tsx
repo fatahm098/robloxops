@@ -63,7 +63,7 @@ export default async function ProjectDetailPage({
         </div>
 
         <div className="min-w-0 space-y-6">
-          <DeliverablesPanel deliverables={project.deliverables} />
+          <DeliverablesPanel projectId={project.id} deliverables={project.deliverables} />
           <TimelinePanel timeline={project.timeline} status={project.status} />
         </div>
       </div>

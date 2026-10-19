@@ -12,7 +12,7 @@ const columns: { status: BoardStatus; accent: string }[] = [
   { status: "blocked", accent: "bg-danger-bright" },
 ];
 
-export function TaskBoard({ tasks }: { tasks: Task[] }) {
+export function TaskBoard({ tasks, disabled = false }: { tasks: Task[]; disabled?: boolean }) {
   return (
     <div className="grid gap-4 md:grid-cols-3">
       {columns.map((column) => {
@@ -42,7 +42,7 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
 
             <div className="flex flex-1 flex-col gap-2 p-2.5">
               {items.length > 0 ? (
-                items.map((task) => <TaskRow key={task.id} task={task} />)
+                items.map((task) => <TaskRow key={task.id} task={task} disabled={disabled} />)
               ) : (
                 <p className="px-1 py-6 text-center text-[11px] text-ink-dim">No tasks in this stage.</p>
               )}

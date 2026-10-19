@@ -116,6 +116,38 @@ class BotRepo:
             project_id,
         )
 
+    async def create_revision(
+        self,
+        tenant_id: Any,
+        project_id: Any,
+        requested_by: str | None,
+        reason: str,
+    ) -> Any | None:
+        """Mirror the worker's revision handler: log the request + bump the project."""
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO revisions (tenant_id, project_id, requested_by, reason)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, project_id, requested_by, reason, status, created_at, resolved_at
+            """,
+            tenant_id,
+            project_id,
+            requested_by,
+            reason,
+        )
+        await self.pool.execute(
+            """
+            UPDATE projects
+            SET status = 'revision',
+                revision_count = revision_count + 1,
+                updated_at = NOW()
+            WHERE tenant_id = $1 AND id = $2
+            """,
+            tenant_id,
+            project_id,
+        )
+        return row
+
 
 class RobloxOpsBot(discord.Client):
     def __init__(self, settings: Settings, repo: BotRepo) -> None:
@@ -282,6 +314,37 @@ class RobloxOpsBot(discord.Client):
             embed.set_footer(text=f"Completeness: {brief_row['completeness_score']}%")
             await interaction.followup.send(embed=embed, ephemeral=True)
 
+        @self.tree.command(name="revision", description="Request a revision on a commission")
+        @app_commands.describe(
+            reason="What needs changing",
+            reference="Reference code, e.g. ROB-260001 (optional)",
+        )
+        async def revision_cmd(
+            interaction: discord.Interaction,
+            reason: str,
+            reference: str | None = None,
+        ) -> None:
+            await interaction.response.defer(ephemeral=True)
+            tenant = await self._tenant_or_reply(interaction)
+            if tenant is None:
+                return
+            project = await self.repo.find_project(
+                tenant.tenant_id, reference, str(interaction.user.id)
+            )
+            if project is None:
+                await interaction.followup.send("No project found.", ephemeral=True)
+                return
+            await self.repo.create_revision(
+                tenant.tenant_id,
+                project["id"],
+                str(interaction.user.id),
+                reason,
+            )
+            await interaction.followup.send(
+                f"Revision logged for {project['reference_code']} — status set to revision.",
+                ephemeral=True,
+            )
+
         @self.tree.command(name="help", description="How RobloxOps works")
         async def help_cmd(interaction: discord.Interaction) -> None:
             embed = discord.Embed(
@@ -292,14 +355,11 @@ class RobloxOpsBot(discord.Client):
                     "**Commands**\n"
                     "`/status [reference]` — project status\n"
                     "`/brief [reference]` — collected brief\n"
+                    "`/revision [reference] <reason>` — request a revision\n"
                     "`/help` — this message"
                 ),
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        self.tree.add_command(status_cmd)
-        self.tree.add_command(brief_cmd)
-        self.tree.add_command(help_cmd)
 
     async def _tenant_or_reply(self, interaction: discord.Interaction) -> ChannelTenant | None:
         if interaction.guild_id is None:

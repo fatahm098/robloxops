@@ -3,13 +3,14 @@ import {
   CheckCircle2,
   Download,
   Image as ImageIcon,
-  Send,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
 
+import { isDemoMode } from "@/lib/data";
 import type { Deliverable } from "@/lib/types";
 import { cn, relativeTime } from "@/lib/utils";
+import { DeliverableActions } from "./deliverable-actions";
 
 const fileTypeLabel: Record<string, string> = {
   RBX: "Roblox Model File",
@@ -37,7 +38,13 @@ function EngineCertifiedBadge() {
   );
 }
 
-export function DeliverablesPanel({ deliverables }: { deliverables: Deliverable[] }) {
+export function DeliverablesPanel({
+  projectId,
+  deliverables,
+}: {
+  projectId: string;
+  deliverables: Deliverable[];
+}) {
   const primary = deliverables.find((deliverable) => deliverable.isFinal) ?? deliverables[0];
   const previews = primary
     ? deliverables.filter((deliverable) => deliverable.id !== primary.id)
@@ -125,21 +132,8 @@ export function DeliverablesPanel({ deliverables }: { deliverables: Deliverable[
             </div>
           ) : null}
 
-          <div className="space-y-2 p-4">
-            <button
-              type="button"
-              className="inline-flex h-10 items-center justify-center gap-2 rounded border border-line-strong bg-transparent px-4 text-body-md font-semibold text-ink transition-colors hover:border-brand hover:bg-surface-2"
-            >
-              <Box className="h-4 w-4" aria-hidden="true" />
-              Open in 3D Viewer
-            </button>
-            <button
-              type="button"
-              className="inline-flex h-11 w-full items-center justify-center gap-2 rounded border border-brand bg-brand px-4 text-body-md font-semibold text-[#020617] transition-colors hover:bg-brand-bright hover:shadow-focus"
-            >
-              <Send className="h-4 w-4" aria-hidden="true" />
-              Send to Customer for Approval
-            </button>
+          <div className="p-4">
+            <DeliverableActions projectId={projectId} disabled={isDemoMode} />
           </div>
         </>
       ) : (

@@ -3,16 +3,17 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BarChart3,
   Bot,
   Box,
   CloudUpload,
   CreditCard,
   FolderKanban,
-  Layers,
   LayoutGrid,
   ListChecks,
   MessageSquare,
   PanelLeft,
+  Repeat2,
   ScrollText,
   Settings,
   Users,
@@ -34,20 +35,33 @@ interface NavItem {
 
 const productionCore: NavItem[] = [
   { label: "Overview", href: "/", icon: LayoutGrid },
-  { label: "Projects & Orders", href: "/projects", icon: FolderKanban, badge: "14", badgeTone: "count" },
-  { label: "Project Details", icon: Layers },
-  { label: "Task Queue", href: "/tasks", icon: ListChecks, badge: "7", badgeTone: "accent" },
-  { label: "Upload & QA", icon: CloudUpload },
-  { label: "Discord Comm", icon: MessageSquare },
-  { label: "Client CRM", icon: Users },
-  { label: "AI Ops & Agents", icon: Bot, badge: "LIVE", badgeTone: "live" },
+  { label: "Projects & Orders", href: "/projects", icon: FolderKanban, badgeTone: "count" },
+  { label: "Task Queue", href: "/tasks", icon: ListChecks, badgeTone: "accent" },
+  { label: "Upload & QA", href: "/deliverables", icon: CloudUpload },
+  { label: "Revisions", href: "/revisions", icon: Repeat2 },
+  { label: "Client CRM", href: "/customers", icon: Users },
+  { label: "AI Ops & Agents", href: "/agents", icon: Bot, badge: "LIVE", badgeTone: "live" },
+  { label: "Discord Comm", href: "/settings", icon: MessageSquare },
 ];
 
 const configuration: NavItem[] = [
-  { label: "Studio Settings", icon: Settings },
-  { label: "Billing & Plan", icon: CreditCard },
+  { label: "Analytics", href: "/analytics", icon: BarChart3 },
+  { label: "Studio Settings", href: "/settings", icon: Settings },
+  { label: "Billing & Plan", href: "/billing", icon: CreditCard },
   { label: "Audit Log", href: "/audit", icon: ScrollText },
 ];
+
+function withLiveBadges(items: NavItem[], projectCount?: number, taskCount?: number): NavItem[] {
+  return items.map((item) => {
+    if (item.href === "/projects" && projectCount !== undefined) {
+      return { ...item, badge: String(projectCount) };
+    }
+    if (item.href === "/tasks" && taskCount !== undefined) {
+      return { ...item, badge: String(taskCount) };
+    }
+    return item;
+  });
+}
 
 const badgeClasses: Record<BadgeTone, string> = {
   count: "border border-line-strong bg-surface-2 text-ink-muted",
@@ -121,8 +135,14 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
   );
 }
 
-export function Sidebar() {
+interface SidebarProps {
+  projectCount?: number;
+  taskCount?: number;
+}
+
+export function Sidebar({ projectCount, taskCount }: SidebarProps) {
   const pathname = usePathname();
+  const navItems = withLiveBadges(productionCore, projectCount, taskCount);
 
   return (
     <aside className="sticky top-0 flex h-screen flex-col border-r border-line bg-surface-1">
@@ -149,7 +169,7 @@ export function Sidebar() {
           Production Core
         </p>
         <ul className="space-y-0.5">
-          {productionCore.map((item) => (
+          {navItems.map((item) => (
             <NavRow key={item.label} item={item} active={isActive(pathname, item.href)} />
           ))}
         </ul>

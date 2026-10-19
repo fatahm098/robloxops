@@ -36,24 +36,49 @@ const SELECT_STATUSES: (ProjectStatus | "all")[] = [
   "cancelled",
 ];
 
-const TEAM_OPTIONS = ["Elena R.", "Marcus T.", "Devon K."];
-
-function hrefFor(status: ProjectStatus | "all", q?: string) {
-  const params = new URLSearchParams();
-  if (q) params.set("q", q);
-  if (status !== "all") params.set("status", status);
-  const query = params.toString();
-  return query ? `/projects?${query}` : "/projects";
-}
-
 interface ProjectFiltersProps {
   counts: StatusCounts;
   activeStatus: ProjectStatus | "all";
   q?: string;
+  assignee?: string;
+  month?: string;
+  per?: number;
+  assignees: string[];
 }
 
-export function ProjectFilters({ counts, activeStatus, q }: ProjectFiltersProps) {
+interface FilterQuery {
+  status?: ProjectStatus | "all";
+  q?: string;
+  assignee?: string;
+  month?: string;
+  per?: number;
+}
+
+function hrefFor(status: ProjectStatus | "all", query: FilterQuery) {
+  const params = new URLSearchParams();
+  if (query.q) params.set("q", query.q);
+  if (status !== "all") params.set("status", status);
+  if (query.assignee) params.set("assignee", query.assignee);
+  if (query.month) params.set("month", query.month);
+  if (query.per && query.per !== 10) params.set("per", String(query.per));
+  const search = params.toString();
+  return search ? `/projects?${search}` : "/projects";
+}
+
+export function ProjectFilters({
+  counts,
+  activeStatus,
+  q,
+  assignee,
+  month,
+  per,
+  assignees,
+}: ProjectFiltersProps) {
   const formRef = useRef<HTMLFormElement>(null);
+
+  function submit() {
+    formRef.current?.requestSubmit();
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -63,6 +88,7 @@ export function ProjectFilters({ counts, activeStatus, q }: ProjectFiltersProps)
         method="get"
         className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-12"
       >
+        {per && per !== 10 ? <input type="hidden" name="per" value={per} /> : null}
         <div className="relative xl:col-span-4">
           <Search
             className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-dim"
@@ -92,7 +118,7 @@ export function ProjectFilters({ counts, activeStatus, q }: ProjectFiltersProps)
             name="status"
             defaultValue={activeStatus}
             aria-label="Filter by pipeline stage"
-            onChange={() => formRef.current?.requestSubmit()}
+            onChange={submit}
             className="h-11 w-full cursor-pointer appearance-none rounded border border-line bg-surface-1 pl-9 pr-8 text-[13px] text-ink-muted focus:border-brand focus:outline-none"
           >
             {SELECT_STATUSES.map((value) => (
@@ -113,12 +139,15 @@ export function ProjectFilters({ counts, activeStatus, q }: ProjectFiltersProps)
             aria-hidden="true"
           />
           <select
-            defaultValue="all"
+            key={`assignee-${assignee ?? ""}`}
+            name="assignee"
+            defaultValue={assignee ?? ""}
             aria-label="Filter by assigned lead"
+            onChange={submit}
             className="h-11 w-full cursor-pointer appearance-none rounded border border-line bg-surface-1 pl-9 pr-8 text-[13px] text-ink-muted focus:border-brand focus:outline-none"
           >
-            <option value="all">All Studio Modelers &amp; Riggers</option>
-            {TEAM_OPTIONS.map((name) => (
+            <option value="">All Studio Modelers &amp; Riggers</option>
+            {assignees.map((name) => (
               <option key={name} value={name}>
                 {name}
               </option>
@@ -130,17 +159,20 @@ export function ProjectFilters({ counts, activeStatus, q }: ProjectFiltersProps)
           />
         </div>
 
-        <div className="xl:col-span-2">
-          <button
-            type="button"
-            className="flex h-11 w-full items-center justify-between gap-2 rounded border border-line bg-surface-1 px-3 text-[13px] text-ink-muted transition-colors hover:border-line-strong hover:text-ink"
-          >
-            <span className="flex items-center gap-2">
-              <CalendarDays className="h-4 w-4 text-ink-dim" aria-hidden="true" />
-              Oct 2024
-            </span>
-            <ChevronDown className="h-4 w-4 text-ink-dim" aria-hidden="true" />
-          </button>
+        <div className="relative xl:col-span-2">
+          <CalendarDays
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-dim"
+            aria-hidden="true"
+          />
+          <input
+            key={`month-${month ?? ""}`}
+            type="month"
+            name="month"
+            defaultValue={month ?? ""}
+            aria-label="Filter by deadline month"
+            onChange={submit}
+            className="h-11 w-full rounded border border-line bg-surface-1 pl-9 pr-3 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-muted focus:border-brand focus:outline-none"
+          />
         </div>
       </form>
 
@@ -150,7 +182,7 @@ export function ProjectFilters({ counts, activeStatus, q }: ProjectFiltersProps)
           return (
             <Link
               key={pill.value}
-              href={hrefFor(pill.value, q)}
+              href={hrefFor(pill.value, { q, assignee, month, per })}
               aria-current={active ? "page" : undefined}
               className={cn(
                 "inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 font-mono text-[11px] tracking-wide transition-colors",

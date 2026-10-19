@@ -11,6 +11,7 @@ from app.models import (
     BriefSchema,
     IntentResult,
     IntakeRequest,
+    QACheck,
     QAReport,
     sanitize_inbound_text,
 )
@@ -59,9 +60,33 @@ def test_intent_confidence_is_bounded() -> None:
         IntentResult(intent="commission_request", confidence=1.5)
 
 
+def test_project_type_uses_other_not_unknown() -> None:
+    brief = BriefSchema(project_type="other")
+    assert brief.project_type == "other"
+    assert brief.completeness_score() == 0
+
+    with pytest.raises(ValidationError):
+        BriefSchema(project_type="unknown")
+
+
 def test_qa_report_score_is_bounded() -> None:
     with pytest.raises(ValidationError):
         QAReport(score=101)
+
+
+def test_qa_report_uses_checks_and_max_score() -> None:
+    report = QAReport(
+        checks=[QACheck(label="Triangle count", value="3,420 / 4,000", passed=True)],
+        score=98,
+    )
+    dumped = report.model_dump()
+    assert dumped["max_score"] == 100
+    assert dumped["checks"][0] == {
+        "label": "Triangle count",
+        "value": "3,420 / 4,000",
+        "passed": True,
+    }
+    assert "items" not in dumped
 
 
 def test_intake_request_parses_uuid() -> None:

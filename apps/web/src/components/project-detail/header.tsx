@@ -1,17 +1,11 @@
 import Link from "next/link";
-import {
-  CheckCircle2,
-  Clock,
-  Download,
-  RefreshCw,
-  Target,
-  User,
-  Wallet,
-} from "lucide-react";
+import { Clock, Target, User, Wallet } from "lucide-react";
 
+import { isDemoMode } from "@/lib/data";
 import { projectTypeLabel, statusMeta } from "@/lib/status";
 import type { PaymentStatus, ProjectDetail } from "@/lib/types";
 import { cn, formatUsd, relativeTime } from "@/lib/utils";
+import { ProjectActions } from "./project-actions";
 
 const paymentTone: Record<PaymentStatus, string> = {
   paid: "text-status-delivered",
@@ -20,11 +14,11 @@ const paymentTone: Record<PaymentStatus, string> = {
   refunded: "text-danger-bright",
 };
 
-const actionBase =
-  "inline-flex h-11 items-center justify-center gap-2 rounded border px-4 text-body-md font-semibold transition-colors";
-
 export function ProjectHeader({ project }: { project: ProjectDetail }) {
   const createdAt = project.timeline[0]?.at ?? project.updatedAt;
+  const finalDeliverable =
+    project.deliverables.find((deliverable) => deliverable.isFinal) ??
+    project.deliverables[project.deliverables.length - 1];
   const target =
     project.projectType === "game_asset"
       ? "Roblox Studio Runtime"
@@ -135,37 +129,12 @@ export function ProjectHeader({ project }: { project: ProjectDetail }) {
           </dl>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 xl:shrink-0 xl:justify-end">
-          <button
-            type="button"
-            className={cn(
-              actionBase,
-              "border-danger bg-[rgba(162,26,36,0.2)] text-danger-soft hover:bg-[rgba(162,26,36,0.35)]",
-            )}
-          >
-            <RefreshCw className="h-4 w-4" aria-hidden="true" />
-            Request Revision
-          </button>
-          <button
-            type="button"
-            className={cn(
-              actionBase,
-              "border-line-strong bg-transparent text-ink hover:border-brand hover:bg-surface-2",
-            )}
-          >
-            <Download className="h-4 w-4" aria-hidden="true" />
-            Download .rbxm
-          </button>
-          <button
-            type="button"
-            className={cn(
-              actionBase,
-              "border-brand bg-brand text-[#020617] hover:bg-brand-bright hover:shadow-focus",
-            )}
-          >
-            <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-            Mark Delivered
-          </button>
+        <div className="xl:shrink-0">
+          <ProjectActions
+            project={project}
+            finalDeliverableId={finalDeliverable?.id}
+            disabled={isDemoMode}
+          />
         </div>
       </div>
     </header>

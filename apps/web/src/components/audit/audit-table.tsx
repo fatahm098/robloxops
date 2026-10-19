@@ -1,24 +1,10 @@
 import Link from "next/link";
 
+import type { AuditStatus, AuditTableRow } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export type AuditStatus = "success" | "failure" | "escalated";
-
-export interface AuditRow {
-  id: string;
-  time: string;
-  date: string;
-  agent: string;
-  model: string;
-  action: string;
-  entity: string;
-  entityHref?: string;
-  tokensIn: number;
-  tokensOut: number;
-  costUsd: number;
-  durationMs: number;
-  status: AuditStatus;
-}
+export type AuditRow = AuditTableRow;
+export type { AuditStatus };
 
 const statusBadge: Record<AuditStatus, { label: string; dot: string; className: string }> = {
   success: {

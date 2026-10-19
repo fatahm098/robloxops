@@ -454,6 +454,9 @@ export const overviewStats: OverviewStats = {
   revenueUsd: 14850,
   revenueRobux: 4200000,
   revenueDelta: 22.4,
+  qaCheck: projects.filter((project) => project.status === "qa_check").length,
+  inDesign: projects.filter((project) => project.status === "in_design").length,
+  highPriorityOpen: 2,
 };
 
 export const studioEvents: StudioEvent[] = [

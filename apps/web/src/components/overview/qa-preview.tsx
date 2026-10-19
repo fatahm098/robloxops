@@ -1,8 +1,43 @@
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
+"use client";
 
+import { useRouter } from "next/navigation";
+import { useState, useTransition } from "react";
+import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+
+import { updateProjectStatus } from "@/app/(dashboard)/projects/actions";
 import type { ProjectSummary } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
-export function QaPreview({ project }: { project: ProjectSummary }) {
+type ActionKind = "approved" | "revision";
+
+export function QaPreview({
+  project,
+  disabled = false,
+}: {
+  project: ProjectSummary;
+  disabled?: boolean;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [busy, setBusy] = useState<ActionKind | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const hasScore = project.qaScore !== undefined;
+  const scoreMax = project.qaScoreMax ?? 100;
+  const specDetail = [project.assetDetail, project.specLine].filter(Boolean).join(" · ");
+
+  function run(status: ActionKind) {
+    if (disabled || pending) return;
+    setBusy(status);
+    setMessage(null);
+    startTransition(async () => {
+      const result = await updateProjectStatus(project.id, status);
+      setMessage(result.message);
+      if (result.ok) router.refresh();
+      setBusy(null);
+    });
+  }
+
   return (
     <section className="panel overflow-hidden" aria-labelledby="qa-preview-title">
       <div className="grid sm:grid-cols-[minmax(0,38%)_minmax(0,62%)]">
@@ -22,15 +57,23 @@ export function QaPreview({ project }: { project: ProjectSummary }) {
           <span className="absolute bottom-3 left-3 inline-flex h-[22px] items-center rounded border border-line-strong bg-canvas/85 px-2 font-mono text-[10px] text-ink">
             {project.reference.toLowerCase()}.rbxm
           </span>
-          <span className="absolute bottom-3 right-3 font-mono text-[9px] tracking-[0.08em] text-ink-dim">
-            QA {project.qaScore ?? "—"}/{project.qaScoreMax ?? 100}
-          </span>
+          {hasScore ? (
+            <span className="absolute bottom-3 right-3 font-mono text-[9px] tracking-[0.08em] text-ink-dim">
+              QA {project.qaScore}/{scoreMax}
+            </span>
+          ) : null}
         </div>
 
         <div className="flex flex-col p-5">
           <div className="flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-[0.08em]">
             <span className="text-ink-dim">Automated QA Mesh Analysis</span>
-            <span className="text-status-delivered">Passed 6/6</span>
+            {hasScore ? (
+              <span className="text-status-delivered">
+                Score {project.qaScore}/{scoreMax}
+              </span>
+            ) : (
+              <span className="text-ink-dim">QA Pending</span>
+            )}
           </div>
 
           <h2 id="qa-preview-title" className="mt-2 text-headline-md text-ink">
@@ -38,28 +81,60 @@ export function QaPreview({ project }: { project: ProjectSummary }) {
           </h2>
 
           <p className="mt-2 max-w-[52ch] text-body-sm leading-relaxed text-ink-muted">
-            Mesh validated against Roblox UGC limits: Vertices{" "}
-            <span className="font-mono text-ink">2,140</span> (&lt;4,000 max), Texture map{" "}
-            <span className="font-mono text-ink">1024×1024</span> PNG with alpha, Attachment point{" "}
-            <span className="font-mono text-ink">RightHandGrip</span> verified.
+            {specDetail ? (
+              <>
+                Asset validated for <span className="font-mono text-ink">{specDetail}</span>.
+              </>
+            ) : (
+              "Awaiting mesh validation details from the QA pipeline."
+            )}
           </p>
 
           <div className="mt-auto flex flex-wrap items-center gap-2 pt-5">
             <button
               type="button"
-              className="inline-flex h-11 items-center justify-center gap-2 rounded bg-brand px-4 text-body-md font-semibold text-canvas transition-colors hover:bg-brand-bright"
+              disabled={disabled || pending}
+              onClick={() => run("approved")}
+              title={disabled ? "Connect Supabase to change project status" : undefined}
+              className={cn(
+                "inline-flex h-11 items-center justify-center gap-2 rounded bg-brand px-4 text-body-md font-semibold text-canvas transition-colors hover:bg-brand-bright",
+                (disabled || pending) && "cursor-not-allowed opacity-60",
+              )}
             >
-              <CheckCircle2 size={15} aria-hidden="true" />
+              {busy === "approved" ? (
+                <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+              ) : (
+                <CheckCircle2 size={15} aria-hidden="true" />
+              )}
               Approve &amp; Export Package
             </button>
             <button
               type="button"
-              className="inline-flex h-11 items-center justify-center gap-2 rounded border border-danger/50 bg-danger/10 px-4 text-body-md font-medium text-danger-soft transition-colors hover:border-danger-bright hover:bg-danger/20"
+              disabled={disabled || pending}
+              onClick={() => run("revision")}
+              title={disabled ? "Connect Supabase to change project status" : undefined}
+              className={cn(
+                "inline-flex h-11 items-center justify-center gap-2 rounded border border-danger/50 bg-danger/10 px-4 text-body-md font-medium text-danger-soft transition-colors hover:border-danger-bright hover:bg-danger/20",
+                (disabled || pending) && "cursor-not-allowed opacity-60",
+              )}
             >
-              <AlertTriangle size={15} aria-hidden="true" />
+              {busy === "revision" ? (
+                <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+              ) : (
+                <AlertTriangle size={15} aria-hidden="true" />
+              )}
               Flag Revision
             </button>
           </div>
+
+          {message ? (
+            <p
+              role="status"
+              className="mt-3 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-muted"
+            >
+              {message}
+            </p>
+          ) : null}
         </div>
       </div>
     </section>

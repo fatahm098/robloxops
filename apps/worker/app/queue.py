@@ -6,9 +6,10 @@ used here)::
     jobs(id uuid, tenant_id uuid, kind text, payload jsonb, status text,
          attempts int, last_error text, created_at timestamptz, ...)
 
-    claim_jobs(worker_id text, batch int) returns setof jobs
+    claim_jobs(worker_id text, batch int, kinds text[]) returns setof jobs
     complete_job(id uuid) returns void
     fail_job(id uuid, error text) returns void
+    reap_stale_jobs(timeout_seconds int) returns int
 
 Claiming is intentionally cross-tenant (a worker serves all tenants); every
 write below carries the job's ``tenant_id`` explicitly.
@@ -26,14 +27,18 @@ from app.db import require_tenant_id
 MAX_BATCH = 50
 MAX_ERROR_CHARS = 2000
 
-CLAIM_SQL = "SELECT * FROM claim_jobs($1, $2)"
+CLAIM_SQL = "SELECT * FROM claim_jobs($1, $2, $3::text[])"
 COMPLETE_SQL = "SELECT complete_job($1)"
 FAIL_SQL = "SELECT fail_job($1, $2)"
+REAP_SQL = "SELECT reap_stale_jobs($1)"
 ENQUEUE_SQL = """
 INSERT INTO jobs (tenant_id, kind, payload)
 VALUES ($1, $2, $3::jsonb)
+ON CONFLICT DO NOTHING
 RETURNING id
 """
+
+STALE_JOB_TIMEOUT_SECONDS = 300
 
 
 @dataclass(slots=True)
@@ -61,16 +66,25 @@ class Job:
 async def claim_jobs(
     pool: Any, worker_id: str, batch: int = 5, kinds: Sequence[str] | None = None
 ) -> list[Job]:
-    """Claim up to ``batch`` jobs. ``kinds`` is filtered client-side."""
+    """Claim up to ``batch`` jobs of the given ``kinds``.
+
+    Kind filtering happens server-side (``kind = any(kinds)``) so jobs the
+    worker cannot dispatch are never marked ``running`` — client-side filtering
+    used to leak those rows in ``running`` forever.
+    """
     if not worker_id or not worker_id.strip():
         raise ValueError("worker_id is required to claim jobs")
     safe_batch = max(1, min(int(batch), MAX_BATCH))
-    rows = await pool.fetch(CLAIM_SQL, worker_id, safe_batch)
-    jobs = [Job.from_row(row) for row in rows]
-    if kinds:
-        allowed = set(kinds)
-        jobs = [job for job in jobs if job.kind in allowed]
-    return jobs
+    kind_list = [str(kind) for kind in kinds] if kinds else None
+    rows = await pool.fetch(CLAIM_SQL, worker_id, safe_batch, kind_list)
+    return [Job.from_row(row) for row in rows]
+
+
+async def reap_stale_jobs(pool: Any, timeout_seconds: int = STALE_JOB_TIMEOUT_SECONDS) -> int:
+    """Return jobs stuck in ``running`` longer than ``timeout_seconds`` to ``queued``."""
+    safe_timeout = max(1, int(timeout_seconds))
+    reaped = await pool.fetchval(REAP_SQL, safe_timeout)
+    return int(reaped or 0)
 
 
 async def complete_job(pool: Any, job_id: UUID) -> None:

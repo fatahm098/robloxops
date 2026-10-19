@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 
 import { statusMeta } from "@/lib/status";
-import type { ProjectSummary, ProjectType } from "@/lib/types";
+import type { ProjectStatus, ProjectSummary, ProjectType } from "@/lib/types";
 import { cn, initialsOf } from "@/lib/utils";
 
 const typeIcon: Record<ProjectType, LucideIcon> = {
@@ -21,14 +21,24 @@ const typeIcon: Record<ProjectType, LucideIcon> = {
   other: Box,
 };
 
-const filters = ["All (18)", "QA Ready (4)", "In Design (6)", "Revision (3)"];
+const filterDefs: { status: ProjectStatus | "all"; label: string }[] = [
+  { status: "all", label: "All" },
+  { status: "qa_check", label: "QA Ready" },
+  { status: "in_design", label: "In Design" },
+  { status: "revision", label: "Revision" },
+];
+
+type StatusCounts = Record<ProjectStatus | "all", number>;
 
 interface UrgentDeliverablesProps {
   projects: ProjectSummary[];
   totalActive: number;
+  counts: StatusCounts;
 }
 
-export function UrgentDeliverables({ projects, totalActive }: UrgentDeliverablesProps) {
+export function UrgentDeliverables({ projects, totalActive, counts }: UrgentDeliverablesProps) {
+  const criticalCount = counts.qa_check + counts.revision;
+
   return (
     <section className="panel overflow-hidden" aria-labelledby="urgent-deliverables-title">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4">
@@ -40,23 +50,24 @@ export function UrgentDeliverables({ projects, totalActive }: UrgentDeliverables
             Urgent Project Deliverables
           </h2>
           <span className="inline-flex h-[22px] items-center rounded border border-[rgba(239,68,68,0.3)] bg-[rgba(239,68,68,0.12)] px-2 font-mono text-[10px] leading-none text-danger-soft">
-            4 Critical
+            {criticalCount} Critical
           </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter deliverables">
-          {filters.map((filter, index) => (
-            <span
-              key={filter}
+          {filterDefs.map((filter) => (
+            <Link
+              key={filter.status}
+              href={filter.status === "all" ? "/projects" : `/projects?status=${filter.status}`}
               className={cn(
-                "inline-flex h-[30px] items-center rounded border px-2.5 font-mono text-[10px] tracking-[0.02em]",
-                index === 0
-                  ? "border-line-strong bg-surface-2 text-ink"
-                  : "border-line text-ink-muted",
+                "inline-flex h-[30px] items-center rounded border px-2.5 font-mono text-[10px] tracking-[0.02em] transition-colors",
+                filter.status === "all"
+                  ? "border-line-strong bg-surface-2 text-ink hover:bg-surface-3"
+                  : "border-line text-ink-muted hover:border-line-strong hover:text-ink",
               )}
             >
-              {filter}
-            </span>
+              {filter.label} ({counts[filter.status]})
+            </Link>
           ))}
         </div>
       </header>

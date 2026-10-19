@@ -3,33 +3,34 @@ import Link from "next/link";
 import type { Task } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { TaskStatusMenu } from "./task-status-menu";
+
 const priorityMeta: Record<number, { dot: string; label: string }> = {
   2: { dot: "bg-danger-bright", label: "High priority" },
   1: { dot: "bg-status-briefing", label: "Normal priority" },
   0: { dot: "bg-ink-dim", label: "Low priority" },
 };
 
-export function TaskRow({ task }: { task: Task }) {
+export function TaskRow({ task, disabled = false }: { task: Task; disabled?: boolean }) {
   const dueToday = task.dueLabel?.toLowerCase().startsWith("today") ?? false;
   const priority = priorityMeta[task.priority] ?? priorityMeta[0];
 
   return (
-    <Link
-      href={`/projects/${task.projectId}`}
-      className="group block rounded border border-line-strong bg-surface-2 p-3 transition-colors hover:border-brand/50 hover:bg-surface-3/60"
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-label-sm text-ink-muted">{task.reference}</span>
-        <span
-          className={cn("h-1.5 w-1.5 shrink-0 rounded-full", priority.dot)}
-          title={priority.label}
-          aria-label={priority.label}
-        />
-      </div>
+    <div className="group rounded border border-line-strong bg-surface-2 p-3 transition-colors hover:border-brand/50 hover:bg-surface-3/60">
+      <Link href={`/projects/${task.projectId}`} className="block">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-mono text-label-sm text-ink-muted">{task.reference}</span>
+          <span
+            className={cn("h-1.5 w-1.5 shrink-0 rounded-full", priority.dot)}
+            title={priority.label}
+            aria-label={priority.label}
+          />
+        </div>
 
-      <p className="mt-2 line-clamp-2 text-[13px] font-medium leading-5 text-ink group-hover:text-white">
-        {task.title}
-      </p>
+        <p className="mt-2 line-clamp-2 text-[13px] font-medium leading-5 text-ink group-hover:text-white">
+          {task.title}
+        </p>
+      </Link>
 
       <div className="mt-3 flex items-center justify-between gap-2 border-t border-line pt-2.5">
         {task.assignee ? (
@@ -54,6 +55,10 @@ export function TaskRow({ task }: { task: Task }) {
           {task.dueLabel ?? "No due date"}
         </span>
       </div>
-    </Link>
+
+      <div className="mt-2 flex justify-end">
+        <TaskStatusMenu taskId={task.id} status={task.status} disabled={disabled} />
+      </div>
+    </div>
   );
 }

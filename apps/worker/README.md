@@ -19,6 +19,7 @@ app/handlers/intake.py M1: classify -> customer -> project + brief -> audit
 app/handlers/brief.py  M2: structured brief + completeness + clarification
 app/handlers/qa.py     P2: text/vision checklist against the brief
 bot.py                 discord.py v2 bot (monitors channels, slash commands)
+runner.py              queue consumer (claims/dispatches jobs, reaps stale ones)
 tests/                 offline unit tests (fake DB, FakeLLM)
 ```
 
@@ -85,15 +86,20 @@ CREATE TABLE jobs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE FUNCTION claim_jobs(worker_id TEXT, batch INT) RETURNS SETOF jobs ...
+CREATE FUNCTION claim_jobs(worker_id TEXT, batch INT, kinds TEXT[]) RETURNS SETOF jobs ...
 CREATE FUNCTION complete_job(id UUID) RETURNS VOID ...
 CREATE FUNCTION fail_job(id UUID, error TEXT) RETURNS VOID ...
+CREATE FUNCTION reap_stale_jobs(timeout_seconds INT) RETURNS INT ...
 ```
 
 Payload keys are snake_case (`tenant_id`, `channel_id`, `message_id`,
-`author_id`, `content`, `thread_id`). `claim_jobs` returns a `SETOF jobs`;
-`complete_job`/`fail_job` take the job id (and error for failures, truncated to
-2000 chars). `enqueue_job` inserts directly with `tenant_id`.
+`author_id`, `content`, `thread_id`). `claim_jobs` returns a `SETOF jobs` and
+filters by `kinds` in SQL so a worker never marks a job it cannot dispatch as
+`running`; `complete_job`/`fail_job` take the job id (and error for failures,
+truncated to 2000 chars). `enqueue_job` inserts with `on conflict do nothing`, so
+the unique index on `(tenant_id, kind, payload->>'message_id')` makes duplicate
+Discord events no-ops. `reap_stale_jobs` returns jobs stuck in `running` (dead
+worker) to `queued`; the runner calls it at startup and periodically.
 
 ## Behaviour notes
 

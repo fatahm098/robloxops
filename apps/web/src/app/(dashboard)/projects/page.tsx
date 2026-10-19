@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Download, Home, Plus } from "lucide-react";
+import { Home } from "lucide-react";
 
+import { CreateProjectDialog, type CustomerOption } from "@/components/projects/create-project-dialog";
 import { ProjectFilters } from "@/components/projects/project-filters";
+import { ProjectsExportButton } from "@/components/projects/projects-export-button";
 import { ProjectsTable } from "@/components/projects/projects-table";
-import { getStatusCounts, listProjects } from "@/lib/data";
+import { getStatusCounts, isDemoMode, listCustomers, listProjects } from "@/lib/data";
 import type { ProjectStatus } from "@/lib/types";
 
 export const metadata: Metadata = {
@@ -15,12 +17,19 @@ const STATUS_FILTERS = [
   "all",
   "intake",
   "briefing",
+  "brief_review",
   "in_design",
   "qa_check",
   "customer_review",
+  "revision",
+  "approved",
   "delivered",
+  "on_hold",
   "cancelled",
 ] as const;
+
+const PER_PAGE_OPTIONS = [10, 25, 50] as const;
+const DEFAULT_PER = 10;
 
 type StatusFilter = (typeof STATUS_FILTERS)[number];
 
@@ -32,6 +41,27 @@ function parseStatus(value: string | undefined): StatusFilter {
   return value && (STATUS_FILTERS as readonly string[]).includes(value) ? (value as StatusFilter) : "all";
 }
 
+function parsePer(value: string | undefined) {
+  const parsed = Number(value);
+  return (PER_PAGE_OPTIONS as readonly number[]).includes(parsed) ? parsed : DEFAULT_PER;
+}
+
+function parsePage(value: string | undefined) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function parseMonth(value: string | undefined) {
+  return value && /^\d{4}-\d{2}$/.test(value) ? value : undefined;
+}
+
+function deadlineMonth(deadline: string | undefined) {
+  if (!deadline) return undefined;
+  const date = new Date(deadline);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
 interface ProjectsPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }
@@ -40,11 +70,42 @@ export default async function ProjectsPage({ searchParams }: ProjectsPageProps) 
   const params = await searchParams;
   const status = parseStatus(firstParam(params.status));
   const q = firstParam(params.q)?.trim() || undefined;
+  const assignee = firstParam(params.assignee)?.trim() || undefined;
+  const month = parseMonth(firstParam(params.month));
+  const per = parsePer(firstParam(params.per));
+  const requestedPage = parsePage(firstParam(params.page));
 
-  const [projects, counts] = await Promise.all([
+  const [projects, allProjects, counts, customers] = await Promise.all([
     listProjects({ status, search: q }),
+    listProjects(),
     getStatusCounts(),
+    listCustomers(),
   ]);
+
+  const filtered = projects.filter((project) => {
+    if (assignee && project.assignee?.name !== assignee) return false;
+    if (month && deadlineMonth(project.deadline) !== month) return false;
+    return true;
+  });
+
+  const total = filtered.length;
+  const pageCount = Math.max(1, Math.ceil(total / per));
+  const page = Math.min(requestedPage, pageCount);
+  const pagedProjects = filtered.slice((page - 1) * per, page * per);
+
+  const assignees = Array.from(
+    new Set(
+      allProjects
+        .map((project) => project.assignee?.name)
+        .filter((name): name is string => Boolean(name)),
+    ),
+  ).sort((a, b) => a.localeCompare(b));
+
+  const customerOptions: CustomerOption[] = customers.map((customer) => ({
+    id: customer.id,
+    displayName: customer.displayName,
+    discordUsername: customer.discordUsername,
+  }));
 
   const activeStatus: ProjectStatus | "all" = status;
 
@@ -78,27 +139,30 @@ export default async function ProjectsPage({ searchParams }: ProjectsPageProps) 
             </div>
           </div>
 
-          <button
-            type="button"
-            className="inline-flex h-11 items-center gap-2 rounded border border-line-strong bg-surface-2 px-4 text-[13px] font-medium text-ink transition-colors hover:border-brand hover:bg-surface-3"
-          >
-            <Download className="h-4 w-4" aria-hidden="true" />
-            Export CSV
-          </button>
+          <ProjectsExportButton projects={filtered} />
 
-          <button
-            type="button"
-            className="inline-flex h-11 items-center gap-2 rounded bg-brand px-4 text-[13px] font-semibold text-canvas shadow-focus transition-colors hover:bg-brand-bright"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Manual Project Order
-          </button>
+          <CreateProjectDialog customers={customerOptions} disabled={isDemoMode} />
         </div>
       </header>
 
-      <ProjectFilters counts={counts} activeStatus={activeStatus} q={q} />
+      <ProjectFilters
+        counts={counts}
+        activeStatus={activeStatus}
+        q={q}
+        assignee={assignee}
+        month={month}
+        per={per}
+        assignees={assignees}
+      />
 
-      <ProjectsTable projects={projects} total={counts.all} />
+      <ProjectsTable
+        projects={pagedProjects}
+        total={total}
+        page={page}
+        per={per}
+        pageCount={pageCount}
+        filters={{ status, q, assignee, month }}
+      />
     </div>
   );
 }
