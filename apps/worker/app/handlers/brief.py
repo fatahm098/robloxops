@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -14,22 +15,25 @@ from app.models import (
     ContinueResult,
     sanitize_inbound_text,
 )
+from app.routing import pick_designer
 
 AGENT_NAME = "brief_collector"
+
+logger = logging.getLogger("robloxops.worker")
 
 CONVERSATION_EXISTS_SQL = """
 SELECT id FROM conversations WHERE tenant_id = $1 AND discord_message_id = $2 LIMIT 1
 """
 
 PROJECT_SQL = """
-SELECT p.id, p.title, p.status, p.project_type, b.structured_data
+SELECT p.id, p.title, p.status, p.project_type, p.human_takeover, b.structured_data
 FROM projects p
 LEFT JOIN briefs b ON b.project_id = p.id AND b.tenant_id = p.tenant_id
 WHERE p.tenant_id = $1 AND p.id = $2
 """
 
 PROJECT_BY_THREAD_SQL = """
-SELECT id, title, status FROM projects
+SELECT id, title, status, human_takeover FROM projects
 WHERE tenant_id = $1 AND discord_thread_id = $2
 ORDER BY created_at DESC
 LIMIT 1
@@ -64,6 +68,24 @@ SET status = CASE
     updated_at = NOW()
 WHERE tenant_id = $1 AND id = $2
 """
+
+ENSURE_TASK_SQL = """
+INSERT INTO tasks (tenant_id, project_id, assigned_to, title, status, priority)
+SELECT $1, $2, $3, $4, 'pending', 0
+WHERE NOT EXISTS (
+    SELECT 1 FROM tasks WHERE tenant_id = $1 AND project_id = $2
+)
+RETURNING id
+"""
+
+
+async def ensure_design_task(
+    db: Any, tenant_id: UUID, project_id: UUID, title: str, assigned_to: Any
+) -> Any | None:
+    """Idempotently create the single design task for a project; returns its id."""
+    return await db.fetchval(
+        tenant_id, ENSURE_TASK_SQL, tenant_id, project_id, assigned_to, title
+    )
 
 
 async def refresh_brief(
@@ -109,12 +131,21 @@ async def refresh_brief(
     )
     await db.execute(tenant_id, PROJECT_STATUS_SQL, tenant_id, project_id)
 
-    return BriefRefreshResult(
+    result = BriefRefreshResult(
         project_id=project_id,
         brief=brief,
         completeness_score=score,
         missing_fields=brief.missing_fields(),
     )
+
+    try:
+        assigned_to = await pick_designer(db, tenant_id)
+        title = (brief.title or str(project["title"] or "")).strip() or "New commission"
+        await ensure_design_task(db, tenant_id, project_id, title, assigned_to)
+    except Exception:
+        logger.exception("brief routing failed for project %s", project_id)
+
+    return result
 
 
 async def handle_continue(db: Any, llm: LLMProtocol, req: ContinueRequest) -> ContinueResult:
@@ -165,6 +196,9 @@ async def handle_continue(db: Any, llm: LLMProtocol, req: ContinueRequest) -> Co
             output_summary="message recorded; no AI or Discord action taken",
         )
         return ContinueResult(status="escalated", project_id=project_id)
+
+    if project is not None and project["human_takeover"]:
+        return ContinueResult(status="human_takeover", project_id=project_id)
 
     if project_id is None:
         return ContinueResult(status="no_project")

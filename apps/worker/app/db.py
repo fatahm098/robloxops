@@ -77,6 +77,19 @@ class Database:
         async with self.pool.acquire() as conn:
             return await conn.execute(query, *args)
 
+    async def all_tenant_ids(self) -> list[Any]:
+        """Return every tenant id.
+
+        This is the ONE intentional cross-tenant enumeration in the worker: the
+        periodic cron/runner needs the tenant list to sweep each tenant's queue.
+        It deliberately does not take ``tenant_id`` and returns ids only (never
+        tenant data), so callers must still run every business query scoped to
+        one of the returned ids.
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("select id from tenants order by id")
+        return [row["id"] for row in rows]
+
     async def fetch_tenant(self, tenant_id: str | UUID) -> dict[str, Any] | None:
         require_tenant_id(tenant_id)
         row = await self.fetchrow(

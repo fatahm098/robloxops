@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.handlers.brief import handle_continue
-from app.llm import FakeLLM
+from app.llm import FakeLLM, LLMError
 from app.models import ContinueRequest
 
 TENANT_ID = uuid4()
@@ -24,7 +24,7 @@ def _norm(sql: str) -> str:
 class FakeDB:
     """Routes queries by shape; asserts every call is tenant-scoped."""
 
-    def __init__(self, *, status: str = "intake") -> None:
+    def __init__(self, *, status: str = "intake", human_takeover: bool = False) -> None:
         self.tenant_row: dict[str, Any] | None = {
             "id": TENANT_ID,
             "name": "Pixel Forge",
@@ -40,12 +40,15 @@ class FakeDB:
                 "status": status,
                 "project_type": "other",
                 "discord_thread_id": THREAD_ID,
+                "human_takeover": human_takeover,
                 "structured_data": None,
             }
         ]
         self.briefs: list[dict[str, Any]] = []
         self.audits: list[dict[str, Any]] = []
         self.updates: list[tuple[str, tuple[Any, ...]]] = []
+        self.tasks: list[dict[str, Any]] = []
+        self.designer_id: Any = uuid4()
 
     def _project(self) -> dict[str, Any] | None:
         return self.projects[0] if self.projects else None
@@ -72,6 +75,20 @@ class FakeDB:
                 "author_id": author_id,
             }
             return self.seen[message_id]["id"]
+        if "from users" in s:
+            return self.designer_id
+        if "insert into tasks" in s:
+            _, project_id, assigned_to, title = args
+            if any(task["project_id"] == project_id for task in self.tasks):
+                return None
+            task = {
+                "id": uuid4(),
+                "project_id": project_id,
+                "assigned_to": assigned_to,
+                "title": title,
+            }
+            self.tasks.append(task)
+            return task["id"]
         raise AssertionError(f"unexpected fetchval: {s}")
 
     async def fetchrow(self, tenant_id: UUID, sql: str, *args: Any) -> Any:
@@ -202,3 +219,73 @@ async def test_revision_message_moves_delivered_project_to_revision() -> None:
     assert result.status == "processed"
     assert db.projects[0]["status"] == "revision"
     assert "revision" in result.reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_successful_refresh_creates_assigned_design_task() -> None:
+    db = FakeDB(status="intake")
+
+    result = await handle_continue(db, FakeLLM(), _request())
+
+    assert result.status == "processed"
+    assert len(db.tasks) == 1
+    assert db.tasks[0]["assigned_to"] == db.designer_id
+    assert db.tasks[0]["title"]
+
+
+@pytest.mark.asyncio
+async def test_escalated_refresh_creates_no_task() -> None:
+    class FailingLLM(FakeLLM):
+        async def extract_brief(
+            self, conversation: str, project_type_hint: str | None = None
+        ) -> Any:
+            raise LLMError("boom")
+
+    db = FakeDB(status="intake")
+
+    result = await handle_continue(db, FailingLLM(), _request())
+
+    assert result.status == "escalated"
+    assert db.briefs == []
+    assert db.tasks == []
+
+
+@pytest.mark.asyncio
+async def test_human_takeover_short_circuits_without_llm() -> None:
+    class NoCallLLM(FakeLLM):
+        async def extract_brief(
+            self, conversation: str, project_type_hint: str | None = None
+        ) -> Any:
+            raise AssertionError("LLM must not be called during human takeover")
+
+        async def draft_message(self, **kwargs: Any) -> str:
+            raise AssertionError("LLM must not be called during human takeover")
+
+    db = FakeDB(status="briefing", human_takeover=True)
+
+    result = await handle_continue(db, NoCallLLM(), _request())
+
+    assert result.status == "human_takeover"
+    assert result.reply == ""
+    assert result.project_id == PROJECT_ID
+    assert "msg-1" in db.seen
+    assert db.briefs == []
+    assert db.tasks == []
+    assert db.updates == []
+
+
+@pytest.mark.asyncio
+async def test_routing_failure_does_not_break_brief_extraction() -> None:
+    class BoomRoutingDB(FakeDB):
+        async def fetchval(self, tenant_id: UUID, sql: str, *args: Any) -> Any:
+            if "from users" in _norm(sql):
+                raise RuntimeError("routing unavailable")
+            return await super().fetchval(tenant_id, sql, *args)
+
+    db = BoomRoutingDB(status="intake")
+
+    result = await handle_continue(db, FakeLLM(), _request())
+
+    assert result.status == "processed"
+    assert len(db.briefs) == 1
+    assert db.tasks == []

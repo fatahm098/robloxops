@@ -14,11 +14,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import time
 from typing import Any
 from uuid import UUID
 
 from app.config import get_settings
 from app.db import Database
+from app.followups import send_due_followups
 from app.handlers import escalate_if_ai_paused
 from app.handlers.brief import handle_continue
 from app.handlers.intake import handle_intake
@@ -31,6 +33,7 @@ logger = logging.getLogger("robloxops.runner")
 
 HANDLED_KINDS = {"intake", "conversation_continue", "qa_check"}
 REAP_EVERY_ITERATIONS = 30
+FOLLOWUP_SWEEP_SECONDS = 900
 
 
 def _payload(job: Job) -> dict[str, Any]:
@@ -84,6 +87,25 @@ async def run_once(db: Database, llm: Any, worker_id: str, batch: int) -> int:
     return len(jobs)
 
 
+async def sweep_followups(db: Database, client: Any = None) -> int:
+    """Send due follow-ups for every tenant. Returns the number of tenants processed.
+
+    Best-effort: one tenant failing must not stop the sweep (or the consumer
+    loop), so each tenant is isolated and its error only logged.
+    """
+    tenant_ids = await db.all_tenant_ids()
+    processed = 0
+    for tenant_id in tenant_ids:
+        try:
+            counts = await send_due_followups(db, tenant_id, client=client)
+            processed += 1
+            if any(counts.values()):
+                logger.info("follow-up sweep tenant=%s %s", tenant_id, counts)
+        except Exception:  # noqa: BLE001 - one tenant must not stop the sweep
+            logger.exception("follow-up sweep failed for tenant %s", tenant_id)
+    return processed
+
+
 async def run_forever() -> None:
     settings = get_settings()
     logging.basicConfig(
@@ -119,12 +141,23 @@ async def run_forever() -> None:
 
     try:
         await _reap()
+        last_sweep = time.monotonic()
+        try:
+            await sweep_followups(db)
+        except Exception:  # noqa: BLE001 - the initial sweep is best-effort
+            logger.exception("initial follow-up sweep failed")
         iterations = 0
         while not stop.is_set():
             processed = await run_once(db, llm, worker_id, settings.worker_batch_size)
             iterations += 1
             if iterations % REAP_EVERY_ITERATIONS == 0:
                 await _reap()
+            if time.monotonic() - last_sweep >= FOLLOWUP_SWEEP_SECONDS:
+                last_sweep = time.monotonic()
+                try:
+                    await sweep_followups(db)
+                except Exception:  # noqa: BLE001 - the sweep must not stop the loop
+                    logger.exception("follow-up sweep failed")
             if processed == 0:
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=settings.worker_poll_seconds)

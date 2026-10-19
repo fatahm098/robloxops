@@ -25,8 +25,12 @@ data with a demo fallback. Follow-up *sending*, email and realtime are not done 
 | tRPC API + Supabase auth context + signed uploads | tRPC scaffolded but unused; uploads live |
 | Stripe billing, auth UI, onboarding, agent pause | done |
 | Revision workflow, follow-up/report persistence, Discord OAuth callback | done |
+| Outbound Discord delivery, human-approval queue, per-project takeover | done |
+| Auto task creation + least-loaded designer routing | done |
+| Follow-up sending (1/24h, max 3 → escalate) + cron sweep | done |
 | Dashboard live wiring (overview values, billing, settings, onboarding steps, sidebar badges, project filters) | done |
-| Follow-up sending, email, realtime | not started |
+| CI (GitHub Actions: typecheck/build + pytest/compileall) | done |
+| Designer notifications, payments/Robux, realtime | not started |
 
 Current state and the prioritized remaining backlog live in
 [`docs/HANDOFF.md`](docs/HANDOFF.md).
@@ -118,7 +122,7 @@ Endpoints: `POST /intake`, `/conversation/continue`, `/qa/check`, `/followup/run
 `/report/generate`, `GET /health`. All but `/health` require
 `Authorization: Bearer $INTERNAL_WORKER_TOKEN`.
 
-Tests: `PYTHONPATH=apps/worker .venv/Scripts/python -m pytest tests -q` (53 passing,
+Tests: `PYTHONPATH=apps/worker .venv/Scripts/python -m pytest tests -q` (82 passing,
 no network, no database).
 
 ## Discord setup
@@ -185,6 +189,6 @@ crimson `#A21A24`. Inter for UI, JetBrains Mono for references, asset IDs and co
 ## Known gaps
 
 See [`docs/HANDOFF.md`](docs/HANDOFF.md) for the full, prioritized list. Summary:
-follow-up *sending* (bot send + rate limits), email and realtime, and the unused
-tRPC layer. RLS policies assume a `tenant_id` JWT claim; configure the auth hook
-before launch.
+designer notifications (email/in-app), payments/Robux, realtime, routing the bot's
+own replies through the approval path, and the unused tRPC layer. RLS policies
+assume a `tenant_id` JWT claim; configure the auth hook before launch.

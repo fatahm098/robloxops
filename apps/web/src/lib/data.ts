@@ -1,9 +1,10 @@
 import { getMockProject, overviewStats, projects, studioEvents, tasks, teamLoads } from "./mock";
+import { listPendingOutbound } from "./outbound";
 import type {
   CustomerSummary,
   DeliverableRow,
   OverviewStats,
-  ProjectDetail,
+  ProjectDetailWithOutbound,
   ProjectFilters,
   ProjectStatus,
   ProjectSummary,
@@ -359,10 +360,10 @@ export async function listProjects(filters: ProjectFilters = {}): Promise<Projec
   );
 }
 
-export async function getProjectDetail(idOrRef: string): Promise<ProjectDetail | null> {
+export async function getProjectDetail(idOrRef: string): Promise<ProjectDetailWithOutbound | null> {
   if (isDemoMode) return getMockProject(idOrRef);
 
-  return withFallback<ProjectDetail | null>(
+  return withFallback<ProjectDetailWithOutbound | null>(
     "getProjectDetail",
     async () => {
       const { supabase, tenantId } = await readContext();
@@ -370,7 +371,7 @@ export async function getProjectDetail(idOrRef: string): Promise<ProjectDetail |
       const column = UUID_PATTERN.test(idOrRef) ? "id" : "reference_code";
       const { data, error } = await supabase
         .from("projects")
-        .select(PROJECT_SELECT)
+        .select(`${PROJECT_SELECT},human_takeover`)
         .eq("tenant_id", tenantId)
         .eq(column, idOrRef)
         .maybeSingle();
@@ -378,9 +379,9 @@ export async function getProjectDetail(idOrRef: string): Promise<ProjectDetail |
       if (error) throw error;
       if (!data) return null;
 
-      const row = data as unknown as ProjectRow;
+      const row = data as unknown as ProjectRow & { human_takeover?: boolean | null };
 
-      const [conversationResult, auditResult] = await Promise.all([
+      const [conversationResult, auditResult, outboundPending] = await Promise.all([
         supabase
           .from("conversations")
           .select(CONVERSATION_SELECT)
@@ -394,16 +395,21 @@ export async function getProjectDetail(idOrRef: string): Promise<ProjectDetail |
           .eq("entity_id", row.id)
           .order("created_at", { ascending: true })
           .limit(50),
+        listPendingOutbound(row.id),
       ]);
 
       if (conversationResult.error) throw conversationResult.error;
       if (auditResult.error) throw auditResult.error;
 
-      return mapProjectDetail(
-        row,
-        (conversationResult.data ?? []) as unknown as ConversationRow[],
-        (auditResult.data ?? []) as unknown as AuditLogRow[],
-      );
+      return {
+        ...mapProjectDetail(
+          row,
+          (conversationResult.data ?? []) as unknown as ConversationRow[],
+          (auditResult.data ?? []) as unknown as AuditLogRow[],
+        ),
+        humanTakeover: row.human_takeover === true,
+        outboundPending,
+      };
     },
     () => getMockProject(idOrRef),
   );

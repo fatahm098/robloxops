@@ -178,7 +178,7 @@ class IntakeResult(BaseModel):
 
 
 class ContinueResult(BaseModel):
-    status: Literal["processed", "duplicate", "no_project", "escalated"]
+    status: Literal["processed", "duplicate", "no_project", "escalated", "human_takeover"]
     project_id: UUID | None = None
     reply: str = ""
     missing_fields: list[str] = Field(default_factory=list)
@@ -204,3 +204,38 @@ class ReportResult(BaseModel):
     reference_code: str
     markdown: str
     report_id: UUID | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Outbound / notification contracts
+# --------------------------------------------------------------------------- #
+
+NotifyKind = Literal["deliverable", "brief", "status", "first_message", "followup", "manual"]
+
+
+class NotifyRequest(BaseModel):
+    tenant_id: UUID
+    project_id: UUID
+    kind: NotifyKind = "status"
+    message: str | None = None
+    deliverable_id: UUID | None = None
+
+
+class NotifyResult(BaseModel):
+    status: Literal["sent", "pending_approval", "skipped", "failed"]
+    outbound_id: UUID | None = None
+    message_id: str | None = None
+    detail: str = ""
+
+
+class OutboundDecisionRequest(BaseModel):
+    tenant_id: UUID
+    outbound_id: UUID
+    approver: str | None = None
+
+
+class ConversationReplyRequest(BaseModel):
+    tenant_id: UUID
+    project_id: UUID
+    content: str = Field(min_length=1, max_length=4000)
+    author: str | None = None

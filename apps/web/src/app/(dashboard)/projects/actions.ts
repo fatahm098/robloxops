@@ -71,6 +71,56 @@ async function requestProjectReport(tenantId: string, projectId: string): Promis
   }
 }
 
+interface WorkerNotifyResult {
+  status?: string;
+  outbound_id?: string | null;
+  message_id?: string | null;
+  detail?: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * Best-effort call to a token-protected worker endpoint. Never throws: callers
+ * surface `{ ok:false, message }` instead of a stack trace.
+ */
+async function callWorker(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<{ ok: boolean; data?: WorkerNotifyResult; message?: string }> {
+  const token = process.env.INTERNAL_WORKER_TOKEN;
+  if (!token) {
+    console.error(`[projects] INTERNAL_WORKER_TOKEN is not configured — ${path} skipped`);
+    return { ok: false, message: "Worker is not configured." };
+  }
+
+  try {
+    const response = await fetch(`${WORKER_URL}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+
+    const data = (await response.json().catch(() => null)) as WorkerNotifyResult | null;
+
+    if (!response.ok) {
+      console.error(`[projects] worker ${path} failed`, response.status, data);
+      return {
+        ok: false,
+        message: (typeof data?.detail === "string" && data.detail) || "The worker rejected the request.",
+      };
+    }
+
+    return { ok: true, data: data ?? undefined };
+  } catch (error) {
+    console.error(`[projects] worker ${path} failed`, error);
+    return { ok: false, message: "Could not reach the worker." };
+  }
+}
+
 function isProjectStatus(value: string): value is ProjectStatus {
   return (PROJECT_STATUSES as readonly string[]).includes(value);
 }
@@ -331,6 +381,272 @@ export async function createDeliverableDownloadUrl(
   } catch (error) {
     console.error("[projects.createDeliverableDownloadUrl] failed", error);
     return { ok: false, message: "Could not prepare the download." };
+  }
+}
+
+/** Posts the deliverable preview to the customer's Discord thread via the worker. */
+export async function sendDeliverableToCustomer(
+  projectId: string,
+  deliverableId?: string,
+): Promise<ProjectActionResult> {
+  if (isDemoMode) {
+    return { ok: false, message: "Demo mode — connect the worker to send to Discord." };
+  }
+
+  try {
+    const auth = await requireTenant();
+    if (!auth) return { ok: false, message: "Session expired. Sign in again." };
+
+    const result = await callWorker("/notify", {
+      tenant_id: auth.tenantId,
+      project_id: projectId,
+      kind: "deliverable",
+      ...(deliverableId ? { deliverable_id: deliverableId } : {}),
+    });
+
+    if (!result.ok) return { ok: false, message: result.message ?? "Could not send to the customer." };
+
+    if (result.data?.status === "failed" || result.data?.status === "skipped") {
+      return {
+        ok: false,
+        message: result.data.detail || "The worker could not send the preview.",
+      };
+    }
+
+    revalidatePath(`/projects/${projectId}`);
+    revalidatePath("/projects");
+
+    return {
+      ok: true,
+      message:
+        result.data?.status === "pending_approval"
+          ? "Queued for approval."
+          : "Preview sent to customer.",
+    };
+  } catch (error) {
+    console.error("[projects.sendDeliverableToCustomer] failed", error);
+    return { ok: false, message: "Could not send to the customer. Try again." };
+  }
+}
+
+/** Posts a project status update to the customer's Discord thread. */
+export async function sendProjectStatusUpdate(projectId: string): Promise<ProjectActionResult> {
+  if (isDemoMode) {
+    return { ok: false, message: "Demo mode — connect the worker to send status updates." };
+  }
+
+  try {
+    const auth = await requireTenant();
+    if (!auth) return { ok: false, message: "Session expired. Sign in again." };
+
+    const result = await callWorker("/notify", {
+      tenant_id: auth.tenantId,
+      project_id: projectId,
+      kind: "status",
+    });
+
+    if (!result.ok) return { ok: false, message: result.message ?? "Could not send the update." };
+
+    if (result.data?.status === "failed" || result.data?.status === "skipped") {
+      return {
+        ok: false,
+        message: result.data.detail || "The worker could not send the update.",
+      };
+    }
+
+    revalidatePath(`/projects/${projectId}`);
+
+    return {
+      ok: true,
+      message:
+        result.data?.status === "pending_approval"
+          ? "Status update queued for approval."
+          : "Status update sent.",
+    };
+  } catch (error) {
+    console.error("[projects.sendProjectStatusUpdate] failed", error);
+    return { ok: false, message: "Could not send the update. Try again." };
+  }
+}
+
+/** Sends a manual human message into the project's Discord thread. */
+export async function sendConversationReply(
+  projectId: string,
+  content: string,
+): Promise<ProjectActionResult> {
+  if (isDemoMode) {
+    return { ok: false, message: "Demo mode — connect the worker to reply in Discord." };
+  }
+
+  const trimmed = content?.trim() ?? "";
+  if (trimmed.length === 0) return { ok: false, message: "Write a message first." };
+  if (trimmed.length > 4000) return { ok: false, message: "Keep replies under 4,000 characters." };
+
+  try {
+    const auth = await requireTenant();
+    if (!auth) return { ok: false, message: "Session expired. Sign in again." };
+
+    const result = await callWorker("/conversation/reply", {
+      tenant_id: auth.tenantId,
+      project_id: projectId,
+      content: trimmed,
+      author: `human:${auth.userId}`,
+    });
+
+    if (!result.ok) return { ok: false, message: result.message ?? "Could not send the reply." };
+
+    if (result.data?.status === "failed" || result.data?.status === "skipped") {
+      return { ok: false, message: result.data.detail || "The worker could not send the reply." };
+    }
+
+    revalidatePath(`/projects/${projectId}`);
+    return { ok: true, message: "Reply sent." };
+  } catch (error) {
+    console.error("[projects.sendConversationReply] failed", error);
+    return { ok: false, message: "Could not send the reply. Try again." };
+  }
+}
+
+/** Resolves the project a queued outbound message belongs to (tenant-scoped). */
+async function outboundProjectId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  tenantId: string,
+  outboundId: string,
+): Promise<string | null> {
+  try {
+    const { data } = await supabase
+      .from("outbound_messages")
+      .select("project_id")
+      .eq("tenant_id", tenantId)
+      .eq("id", outboundId)
+      .maybeSingle();
+    return (data as { project_id?: string | null } | null)?.project_id ?? null;
+  } catch (error) {
+    console.error("[projects] outboundProjectId failed", error);
+    return null;
+  }
+}
+
+/** Approves a queued outbound message so the worker sends it. */
+export async function approveOutbound(outboundId: string): Promise<ProjectActionResult> {
+  if (isDemoMode) {
+    return { ok: false, message: "Demo mode — connect the worker to approve messages." };
+  }
+  if (!outboundId) return { ok: false, message: "Missing outbound message." };
+
+  try {
+    const auth = await requireTenant();
+    if (!auth) return { ok: false, message: "Session expired. Sign in again." };
+
+    const projectId = await outboundProjectId(auth.supabase, auth.tenantId, outboundId);
+
+    const result = await callWorker("/notify/approve", {
+      tenant_id: auth.tenantId,
+      outbound_id: outboundId,
+      approver: `human:${auth.userId}`,
+    });
+
+    if (!result.ok) return { ok: false, message: result.message ?? "Could not approve the message." };
+
+    if (projectId) revalidatePath(`/projects/${projectId}`);
+    revalidatePath("/projects");
+    return {
+      ok: true,
+      message: result.data?.status === "sent" ? "Message sent." : "Message approved.",
+    };
+  } catch (error) {
+    console.error("[projects.approveOutbound] failed", error);
+    return { ok: false, message: "Could not approve the message. Try again." };
+  }
+}
+
+/** Rejects a queued outbound message; the worker will not send it. */
+export async function rejectOutbound(outboundId: string): Promise<ProjectActionResult> {
+  if (isDemoMode) {
+    return { ok: false, message: "Demo mode — connect the worker to reject messages." };
+  }
+  if (!outboundId) return { ok: false, message: "Missing outbound message." };
+
+  try {
+    const auth = await requireTenant();
+    if (!auth) return { ok: false, message: "Session expired. Sign in again." };
+
+    const projectId = await outboundProjectId(auth.supabase, auth.tenantId, outboundId);
+
+    const result = await callWorker("/notify/reject", {
+      tenant_id: auth.tenantId,
+      outbound_id: outboundId,
+      approver: `human:${auth.userId}`,
+    });
+
+    if (!result.ok) return { ok: false, message: result.message ?? "Could not reject the message." };
+
+    if (projectId) revalidatePath(`/projects/${projectId}`);
+    revalidatePath("/projects");
+    return { ok: true, message: "Message rejected." };
+  } catch (error) {
+    console.error("[projects.rejectOutbound] failed", error);
+    return { ok: false, message: "Could not reject the message. Try again." };
+  }
+}
+
+/**
+ * Pauses/resumes the AI for a project and records the human takeover audit row.
+ * Does not call the worker: the AI handlers read `projects.human_takeover`.
+ */
+export async function setHumanTakeover(
+  projectId: string,
+  enabled: boolean,
+): Promise<ProjectActionResult> {
+  if (isDemoMode) {
+    return { ok: false, message: "Demo mode — connect Supabase to toggle human takeover." };
+  }
+
+  try {
+    const auth = await requireTenant();
+    if (!auth) return { ok: false, message: "Session expired. Sign in again." };
+
+    const { data, error } = await auth.supabase
+      .from("projects")
+      .update({
+        human_takeover: enabled,
+        takeover_by: enabled ? auth.userId : null,
+        takeover_at: enabled ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", projectId)
+      .eq("tenant_id", auth.tenantId)
+      .select("id")
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return { ok: false, message: "Project not found." };
+
+    const { error: auditError } = await auth.supabase.from("agent_audit_log").insert({
+      tenant_id: auth.tenantId,
+      agent_name: `human:${auth.userId}`,
+      action: enabled ? "human_takeover" : "human_takeover_released",
+      entity_type: "project",
+      entity_id: projectId,
+      input_summary: `human_takeover=${enabled}`,
+      output_summary: enabled
+        ? "AI paused for this project; humans reply manually."
+        : "AI resumed for this project.",
+      status: "success",
+    });
+
+    if (auditError) console.error("[projects.setHumanTakeover] audit failed", auditError);
+
+    revalidatePath(`/projects/${projectId}`);
+    revalidatePath("/projects");
+
+    return {
+      ok: true,
+      message: enabled ? "Human takeover enabled." : "Human takeover released.",
+    };
+  } catch (error) {
+    console.error("[projects.setHumanTakeover] failed", error);
+    return { ok: false, message: "Could not change human takeover. Try again." };
   }
 }
 

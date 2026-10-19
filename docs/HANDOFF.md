@@ -20,6 +20,9 @@ in the working tree**. Nothing has been committed since that scaffold.
 | Revisions table + RLS | done (0008) |
 | Follow-ups table + RLS + worker persistence | done (0009) |
 | Reports table + RLS + worker persistence | done (0010) |
+| Outbound Discord delivery (worker → Discord REST) | done (0011, `app/discord.py`) |
+| Human-approval outbound queue + per-project takeover | done (0011) |
+| Follow-up sending (bot/Discord send, 1/24h + max 3 → escalate) | done this session |
 | Tenant billing period (`tenants.current_period_end`) | done (0005) |
 | FastAPI worker: intake, brief, QA, follow-up, report | implemented AND persisting (follow-ups, reports) |
 | Discord bot: monitored channels, threads, `/status` `/brief` `/revision` `/help` | fixed; needs a real guild to run |
@@ -35,12 +38,12 @@ in the working tree**. Nothing has been committed since that scaffold.
 | Project status actions (revision / delivered / send-to-customer / report download) | wired earlier + this session |
 | AI pause switch (global + per-agent via `tenants.settings`) | wired + enforced end-to-end (handlers + queue, this session) |
 | tRPC API | scaffolded but **unused** by the UI |
-| Follow-up *sending* (bot send + rate limits), email, realtime | not done |
+| Designer notifications (email/push/in-app), payments/Robux, realtime | not done |
 
 ## Verify (current results)
 
 ```powershell
-$env:PYTHONPATH="apps/worker"; & "apps/worker/.venv/Scripts/python.exe" -m pytest apps/worker/tests -q   # 53 passed
+$env:PYTHONPATH="apps/worker"; & "apps/worker/.venv/Scripts/python.exe" -m pytest apps/worker/tests -q   # 82 passed
 & "apps/worker/.venv/Scripts/python.exe" -m compileall -q apps/worker                                     # clean
 npm --workspace apps/web run typecheck                                                                    # clean
 npm --workspace apps/web run build                                                                        # 23 pages, OK
@@ -220,6 +223,51 @@ final typecheck + build + `pytest` were run on the merged tree.
   preserving), selection state and working CSV export
   (`projects-table-client.tsx`, `project-csv.ts`, `projects-export-button.tsx`).
 
+## Completed in the 2026-10-19 session (automation: outbound, takeover, auto-tasks, follow-ups)
+
+Built in two waves by parallel agents; gates run on the merged tree (**82 tests, 23 pages**).
+
+### Wave 1 — worker outbound core
+- `supabase/migrations/0011_outbound_takeover.sql` — `outbound_messages` (queue with
+  `pending/sent/rejected/failed`, RLS), and `projects.human_takeover` /
+  `takeover_by` / `takeover_at`.
+- `apps/worker/app/discord.py` (NEW) — `send_message(channel_id, content, *, token, client)`
+  posting to the Discord REST API with the bot token; `DiscordSendError`. No token logging.
+- `apps/worker/app/outbound.py` (NEW) — `send_or_queue` (honours `settings.approval_mode`:
+  `auto` sends, `preview`/`human` queue for approval; skips when `ai_paused`),
+  `approve_outbound` / `reject_outbound`, `send_manual_reply` (always sends),
+  `deliver` (marks sent, logs an outbound `conversations` row + audit; Discord failure
+  → `failed` + audit, never raises). Deterministic `default_body` templates (no LLM).
+- `app/main.py` — protected endpoints `POST /notify`, `/notify/approve`, `/notify/reject`,
+  `/conversation/reply`; `app/models.py` additive request/result models.
+- Tests `tests/test_outbound.py` (mock `httpx.MockTransport`).
+
+### Wave 2A — web approvals + takeover (agent, web files)
+- `src/lib/outbound.ts` (NEW) `listPendingOutbound`. `getProjectDetail` now also returns
+  `humanTakeover` + `outboundPending`.
+- `projects/actions.ts` — `sendDeliverableToCustomer`, `sendProjectStatusUpdate`,
+  `sendConversationReply`, `approveOutbound`, `rejectOutbound`, `setHumanTakeover`
+  (Supabase-only, audited). All call the worker via the existing token pattern.
+- `conversation-panel.tsx` — reply composer + takeover toggle + "AI paused" banner;
+  new `outbound-approvals.tsx` (Approve/Reject cards). "Send to Customer" and
+  "Mark Delivered" now actually post to Discord.
+
+### Wave 2B — auto-tasks + routing + takeover short-circuit (agent, worker)
+- `app/routing.py` (NEW) `pick_designer` — least-loaded `designer`/`manager`, owner fallback.
+- `handlers/brief.py` — `ensure_design_task` (idempotent) runs after a successful brief;
+  `handle_continue` returns `status="human_takeover"` and skips the LLM when the project
+  is taken over. `models.ContinueResult` gained that status.
+
+### Wave 2C — follow-up sending + cron (agent, worker)
+- `app/followups.py` — `send_followup` / `send_due_followups`: real Discord send with
+  limits (max 1/project/24h, max 3 then `skipped` + escalated audit), outbound
+  conversation + audit. `app/db.py` — `all_tenant_ids()`.
+- `runner.py` — `sweep_followups` every `FOLLOWUP_SWEEP_SECONDS=900` across tenants.
+
+### CI
+- `.github/workflows/ci.yml` (NEW) — `web` (npm ci → typecheck → build) and `worker`
+  (pip install → pytest → compileall) jobs on push/PR.
+
 ## Remaining backlog (prioritized)
 
 ### P0 — correctness / completeness of the MVP workflow
@@ -253,17 +301,27 @@ status mutation (`updateTaskStatus` + `TaskStatusMenu`). Files:
     `next_reference_code` returns `ROB-{seq}`. Align docs or function.
 15. **Unused worker config:** `supabase_url`, `supabase_service_role_key`,
     `discord_application_id` in `apps/worker/app/config.py` are never read.
-16. **Follow-up send path.** `/followup/run` now persists `pending` rows, but
-    nothing actually sends them via the bot or enforces max 1/24h / max 3 before
-    escalation. Add the send + limits. Files: `apps/worker/app/followups.py`,
-    `apps/worker/bot.py`, `apps/worker/runner.py`.
+16. **Designer notifications.** Nothing tells a designer a task was assigned;
+    add email (Resend/SES) and/or an in-app bell. Hook: `ensure_design_task`
+    in `apps/worker/app/handlers/brief.py`; web: dashboard/header.
 17. **Report regenerate UX.** `project-actions.tsx` lazily loads the report via
     `fetchProjectReport`; thread the report through the project detail page/header
     as a prop so it is server-rendered (the prop path already takes precedence).
+18. **Payments / Robux.** `payment_status` exists but is edited by hand; no Robux
+    rate tracking, invoice generation, payment gate or payment follow-up agent
+    (plan P3). Files: `projects/actions.ts`, a new worker agent.
+19. **Approval-mode polish.** `outbound.py` honours `settings.approval_mode`
+    (`auto`/`preview`/`human`) but there is no settings UI to choose per-action
+    gates (first message / brief / deliverable). Extend `settings-form.tsx`.
+20. **Bot fast path bypasses approval.** The bot sends the intake/continue reply
+    directly (`bot.py`); only the worker outbound path is gated. Route the bot's
+    own replies through `app/outbound.py` (or the `/notify` endpoint) for full
+    consistency.
+21. **Realtime.** Dashboard is server-rendered/polled; no Supabase Realtime.
 
 ## Environment setup checklist (not in repo — required to run live)
 
-- **Supabase**: create project, apply migrations `0001`→`0010` in order
+- **Supabase**: create project, apply migrations `0001`→`0011` in order
   (`supabase db push`), load `supabase/seed.sql` (`supabase db reset`), configure
   the `tenant_id` JWT claim (see `docs/AUTH.md`), create the `deliverables`
   bucket (0007 does this). Web env: `NEXT_PUBLIC_SUPABASE_URL`,

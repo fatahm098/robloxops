@@ -4,24 +4,43 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Box, Loader2, Send } from "lucide-react";
 
-import { updateProjectStatus } from "@/app/(dashboard)/projects/actions";
+import {
+  sendDeliverableToCustomer,
+  updateProjectStatus,
+} from "@/app/(dashboard)/projects/actions";
 
 interface DeliverableActionsProps {
   projectId: string;
+  deliverableId?: string;
   disabled?: boolean;
 }
 
-export function DeliverableActions({ projectId, disabled = false }: DeliverableActionsProps) {
+export function DeliverableActions({
+  projectId,
+  deliverableId,
+  disabled = false,
+}: DeliverableActionsProps) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageOk, setMessageOk] = useState(false);
 
   async function sendToCustomer() {
     setBusy(true);
     setMessage(null);
-    const result = await updateProjectStatus(projectId, "customer_review");
-    if (result.ok) router.refresh();
-    else setMessage(result.message);
+
+    const statusResult = await updateProjectStatus(projectId, "customer_review");
+    if (!statusResult.ok) {
+      setMessageOk(false);
+      setMessage(statusResult.message);
+      setBusy(false);
+      return;
+    }
+
+    const sendResult = await sendDeliverableToCustomer(projectId, deliverableId);
+    setMessageOk(sendResult.ok);
+    setMessage(sendResult.message);
+    router.refresh();
     setBusy(false);
   }
 
@@ -50,7 +69,15 @@ export function DeliverableActions({ projectId, disabled = false }: DeliverableA
         Send to Customer for Approval
       </button>
       {message ? (
-        <p className="font-mono text-[10px] uppercase tracking-[0.06em] text-danger-soft">{message}</p>
+        <p
+          className={
+            messageOk
+              ? "font-mono text-[10px] uppercase tracking-[0.06em] text-status-delivered"
+              : "font-mono text-[10px] uppercase tracking-[0.06em] text-danger-soft"
+          }
+        >
+          {message}
+        </p>
       ) : null}
     </div>
   );

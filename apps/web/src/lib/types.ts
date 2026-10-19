@@ -1,3 +1,7 @@
+import type { OutboundMessage } from "./outbound";
+
+export type { OutboundMessage };
+
 export type ProjectStatus =
   | "intake"
   | "briefing"
@@ -112,6 +116,15 @@ export interface ProjectDetail extends ProjectSummary {
   deliverables: Deliverable[];
   timeline: TimelineEvent[];
   conversation: ConversationMessage[];
+}
+
+/**
+ * Project detail plus outbound approval / human-takeover state. Additive
+ * extension of `ProjectDetail`; `getProjectDetail` returns this shape.
+ */
+export interface ProjectDetailWithOutbound extends ProjectDetail {
+  humanTakeover: boolean;
+  outboundPending: OutboundMessage[];
 }
 
 export interface OverviewStats {

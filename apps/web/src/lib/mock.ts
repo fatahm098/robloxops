@@ -1,7 +1,7 @@
 import type {
   Customer,
   OverviewStats,
-  ProjectDetail,
+  ProjectDetailWithOutbound,
   ProjectSummary,
   StudioEvent,
   Task,
@@ -239,7 +239,7 @@ export const projects: ProjectSummary[] = [
   },
 ];
 
-const detail104: ProjectDetail = {
+const detail104: ProjectDetailWithOutbound = {
   ...projects[0],
   brief: {
     summary:
@@ -382,11 +382,13 @@ const detail104: ProjectDetail = {
       agentName: "communication",
     },
   ],
+  humanTakeover: false,
+  outboundPending: [],
 };
 
-const details: Record<string, ProjectDetail> = { p_104: detail104 };
+const details: Record<string, ProjectDetailWithOutbound> = { p_104: detail104 };
 
-export function getMockProject(id: string): ProjectDetail | null {
+export function getMockProject(id: string): ProjectDetailWithOutbound | null {
   if (details[id]) return details[id];
   const summary = projects.find((p) => p.id === id || p.reference === id);
   if (!summary) return null;
@@ -440,6 +442,8 @@ export function getMockProject(id: string): ProjectDetail | null {
         content: `Interested in ${summary.title.toLowerCase()}. What do you need from me to start?`,
       },
     ],
+    humanTakeover: false,
+    outboundPending: [],
   };
 }
 

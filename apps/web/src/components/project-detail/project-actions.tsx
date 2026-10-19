@@ -7,6 +7,7 @@ import { CheckCircle2, Download, FileText, Loader2, RefreshCw } from "lucide-rea
 import {
   createDeliverableDownloadUrl,
   fetchProjectReport,
+  sendProjectStatusUpdate,
   updateProjectStatus,
 } from "@/app/(dashboard)/projects/actions";
 import type { ProjectReport } from "@/lib/insights";
@@ -32,6 +33,7 @@ export function ProjectActions({
   const router = useRouter();
   const [busy, setBusy] = useState<"revision" | "delivered" | "download" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageOk, setMessageOk] = useState(false);
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(
     report?.contentMd ?? null,
   );
@@ -74,8 +76,24 @@ export function ProjectActions({
     setBusy(kind);
     setMessage(null);
     const result = await updateProjectStatus(project.id, status);
-    if (result.ok) router.refresh();
-    else setMessage(result.message);
+    if (!result.ok) {
+      setMessageOk(false);
+      setMessage(result.message);
+      setBusy(null);
+      return;
+    }
+
+    // Delivery also posts a status update to the customer's Discord thread.
+    if (kind === "delivered") {
+      const notify = await sendProjectStatusUpdate(project.id);
+      setMessageOk(notify.ok);
+      setMessage(notify.ok ? notify.message : `Delivered. ${notify.message}`);
+    } else {
+      setMessageOk(true);
+      setMessage(result.message);
+    }
+
+    router.refresh();
     setBusy(null);
   }
 
@@ -84,8 +102,12 @@ export function ProjectActions({
     setBusy("download");
     setMessage(null);
     const result = await createDeliverableDownloadUrl(finalDeliverableId);
-    if (result.ok && result.url) window.open(result.url, "_blank", "noopener");
-    else setMessage(result.message);
+    if (result.ok && result.url) {
+      window.open(result.url, "_blank", "noopener");
+    } else {
+      setMessageOk(false);
+      setMessage(result.message);
+    }
     setBusy(null);
   }
 
@@ -163,7 +185,15 @@ export function ProjectActions({
       </div>
 
       {message ? (
-        <p className="font-mono text-[10px] uppercase tracking-[0.06em] text-danger-soft">{message}</p>
+        <p
+          className={
+            messageOk
+              ? "font-mono text-[10px] uppercase tracking-[0.06em] text-status-delivered"
+              : "font-mono text-[10px] uppercase tracking-[0.06em] text-danger-soft"
+          }
+        >
+          {message}
+        </p>
       ) : null}
     </div>
   );

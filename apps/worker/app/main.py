@@ -19,14 +19,24 @@ from app.handlers.intake import handle_intake
 from app.handlers.qa import run_qa
 from app.handlers.revision import create_revision
 from app.llm import LLMError, LLMProtocol, get_llm as build_llm
+from app.outbound import (
+    approve_outbound,
+    reject_outbound,
+    send_manual_reply,
+    send_or_queue,
+)
 from app.reports import persist_report
 from app.models import (
     ContinueRequest,
     ContinueResult,
+    ConversationReplyRequest,
     FollowUpDraft,
     FollowUpRequest,
     IntakeRequest,
     IntakeResult,
+    NotifyRequest,
+    NotifyResult,
+    OutboundDecisionRequest,
     QARequest,
     ReportRequest,
     ReportResult,
@@ -301,6 +311,90 @@ async def revision_create(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _notify_result(result: dict[str, Any]) -> NotifyResult:
+    """Map an outbound helper result onto the public ``NotifyResult`` shape."""
+    status_value = result.get("status")
+    if status_value in ("sent", "pending_approval", "skipped", "failed"):
+        mapped = status_value
+    else:
+        mapped = "skipped"
+    outbound = result.get("outbound") if isinstance(result.get("outbound"), dict) else result
+    outbound_id = outbound.get("id") if isinstance(outbound, dict) else None
+    message_id = outbound.get("external_message_id") if isinstance(outbound, dict) else None
+    return NotifyResult(
+        status=mapped,
+        outbound_id=outbound_id,
+        message_id=message_id,
+        detail=str(result.get("detail") or ""),
+    )
+
+
+@router.post("/notify", response_model=NotifyResult)
+async def notify(
+    body: NotifyRequest,
+    db: Database = Depends(get_db),
+) -> NotifyResult:
+    try:
+        result = await send_or_queue(
+            db,
+            body.tenant_id,
+            project_id=body.project_id,
+            kind=body.kind,
+            body=body.message,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if body.kind == "manual" and not (body.message or "").strip():
+            raise HTTPException(status_code=422, detail=message) from exc
+        raise HTTPException(status_code=404, detail=message) from exc
+    return _notify_result(result)
+
+
+@router.post("/notify/approve", response_model=NotifyResult)
+async def notify_approve(
+    body: OutboundDecisionRequest,
+    db: Database = Depends(get_db),
+) -> NotifyResult:
+    result = await approve_outbound(
+        db,
+        body.tenant_id,
+        body.outbound_id,
+        approver=body.approver,
+    )
+    return _notify_result(result)
+
+
+@router.post("/notify/reject")
+async def notify_reject(
+    body: OutboundDecisionRequest,
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    return await reject_outbound(
+        db,
+        body.tenant_id,
+        body.outbound_id,
+        approver=body.approver,
+    )
+
+
+@router.post("/conversation/reply", response_model=NotifyResult)
+async def conversation_reply(
+    body: ConversationReplyRequest,
+    db: Database = Depends(get_db),
+) -> NotifyResult:
+    try:
+        result = await send_manual_reply(
+            db,
+            body.tenant_id,
+            project_id=body.project_id,
+            content=body.content,
+            author=body.author,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _notify_result(result)
 
 
 app.include_router(router)

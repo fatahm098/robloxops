@@ -5,8 +5,9 @@ import { BriefPanel } from "@/components/project-detail/brief-panel";
 import { ConversationPanel } from "@/components/project-detail/conversation-panel";
 import { DeliverablesPanel } from "@/components/project-detail/deliverables-panel";
 import { ProjectHeader } from "@/components/project-detail/header";
+import { OutboundApprovals } from "@/components/project-detail/outbound-approvals";
 import { TimelinePanel } from "@/components/project-detail/timeline-panel";
-import { getProjectDetail } from "@/lib/data";
+import { getProjectDetail, isDemoMode } from "@/lib/data";
 
 export default async function ProjectDetailPage({
   params,
@@ -56,9 +57,14 @@ export default async function ProjectDetailPage({
 
           <BriefPanel brief={project.brief} />
 
+          <OutboundApprovals messages={project.outboundPending} disabled={isDemoMode} />
+
           <ConversationPanel
+            projectId={project.id}
             conversation={project.conversation}
             channel={project.discordTicket ?? "#client-comm"}
+            humanTakeover={project.humanTakeover}
+            disabled={isDemoMode}
           />
         </div>
 
