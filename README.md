@@ -4,34 +4,37 @@ AI-powered operations SaaS for Roblox design studios. A studio connects its Disc
 server; the platform handles intake, brief collection, project records, the designer
 queue and delivery notifications, so the designer only designs.
 
-Planning source: `../roblox-studio-saas-plan.md`. UI reference:
-`../robloxops-design/stitch_robloxops_studio_dashboard_system/`.
+The original product plan and UI reference live outside this repository. This
+README is self-contained: everything needed to clone, run and verify the project
+is here.
 
 ## Status
 
-Milestone 1 ("bot hears and records") is implemented end-to-end in code and runs in
-demo mode without credentials. The core workflow (intake, brief, QA, revisions,
-follow-ups, report persistence, Discord OAuth) is wired; every dashboard surface
-(overview, billing, settings, onboarding, projects filters, sidebar) now reads live
-data with a demo fallback. Follow-up *sending*, email and realtime are not done yet.
+Milestone 1 ("bot hears and records") runs end-to-end in demo mode without
+credentials. The table below describes what is implemented and exercised by the
+worker test suite. Every dashboard surface renders live Supabase data when it is
+configured and falls back to `src/lib/mock.ts` when it is not.
+
+Last verified **2026-10-20**: `tsc --noEmit` clean, `next build` succeeds,
+**142 worker tests pass**, `npm run scan:secrets:all` reports no findings.
 
 | Area | State |
 |---|---|
-| Postgres schema, RLS, per-tenant reference codes | done |
+| Postgres schema, RLS, per-tenant reference codes | done (18 migrations) |
 | Postgres job queue (`claim_jobs` / `complete_job` / `fail_job`) | done |
-| FastAPI worker: intake, brief, QA, follow-up, report | done (LLM optional), follow-ups/reports persist |
+| FastAPI worker: intake, brief, QA, follow-up, report, revision, invoice, notify | done (LLM optional) |
 | Discord bot: channel monitoring, threads, slash commands (`/status` `/brief` `/revision` `/help`) | done, needs a real guild |
-| Next.js dashboard: overview, projects, detail, tasks, audit, customers, deliverables, revisions, agents, analytics, billing, settings, onboarding | done |
-| tRPC API + Supabase auth context + signed uploads | tRPC scaffolded but unused; uploads live |
-| Stripe billing, auth UI, onboarding, agent pause | done |
-| Revision workflow, follow-up/report persistence, Discord OAuth callback | done |
+| Next.js dashboard: overview, projects, detail, tasks, audit, customers, deliverables, revisions, agents, analytics, billing, settings, onboarding, notifications, assistant, portfolio | done |
+| Stripe billing (checkout, portal, webhook, per-tenant key) | done |
 | Outbound Discord delivery, human-approval queue, per-project takeover | done |
 | Auto task creation + least-loaded designer routing | done |
-| Follow-up sending (1/24h, max 3 → escalate) + cron sweep | done |
-| Dashboard live wiring (overview values, billing, settings, onboarding steps, sidebar badges, project filters) | done |
-| CI (GitHub Actions: typecheck/build + pytest/compileall) | done |
 | Per-tenant API keys (Supabase Vault) + per-tenant LLM/Stripe | done |
-| Designer notifications, payments/Robux, realtime | not started |
+| Designer notifications (in-app + Resend email) | done |
+| In-app assistant with 9 audited tools | done |
+| Portfolio drafts + X publishing behind an approval gate | done |
+| Realtime dashboard refresh (`postgres_changes` → `router.refresh()`) | done |
+| tRPC API | scaffolded but unused by the UI |
+| Payments/Robux | not started |
 
 Current state and the prioritized remaining backlog live in
 [`docs/HANDOFF.md`](docs/HANDOFF.md).
@@ -43,12 +46,13 @@ Discord ──▶ bot.py (discord.py) ──▶ jobs table ──▶ worker (Fas
                                                       │
                                         Postgres (Supabase) + Storage
                                                       │
-Next.js dashboard ──▶ tRPC ──▶ Supabase (RLS: tenant_id = JWT claim)
+Next.js dashboard ──▶ server components + server actions ──▶ Supabase
+                                  (RLS: tenant_id = JWT claim)
 ```
 
-Three deployable units: Next.js (Vercel), worker (Fly.io), bot (Fly.io). The worker
-uses the service role, so it bypasses RLS and must pass `tenant_id` explicitly on
-every query — enforced by `app.db.require_tenant_id`.
+Three deployable units: Next.js (Vercel), worker API + queue runner, and the bot
+process. The worker uses the service role, so it bypasses RLS and must pass
+`tenant_id` explicitly on every query — enforced by `app.db.require_tenant_id`.
 
 `pg-boss` from the original plan was replaced by a SQL queue: pg-boss is Node-only
 and the worker is Python.
@@ -57,19 +61,28 @@ and the worker is Python.
 
 ```
 apps/web                     Next.js 15 App Router, TypeScript, Tailwind
-  src/app/(dashboard)/       overview, projects, projects/[id], tasks, audit
-  src/components/            shell, overview, projects, project-detail, tasks, audit
+  src/app/(dashboard)/       overview, projects, projects/[id], tasks, audit, customers,
+                             deliverables, revisions, agents, analytics, billing,
+                             settings, onboarding, notifications, assistant, portfolio
+  src/components/            shell, overview, projects, project-detail, tasks, audit,
+                             assistant, portfolio, settings
   src/lib/data.ts            single data-access seam (mock ⇄ Supabase)
   src/lib/mock.ts            demo dataset used when env vars are absent
-  src/server/                tRPC context + routers
+  src/lib/realtime.ts        postgres_changes → debounced router.refresh()
+  src/server/                tRPC context + routers (not mounted by the UI)
   src/lib/supabase/          browser, server, admin clients + row mappers
 apps/worker                  Python 3.12 worker + Discord bot
-  app/handlers/              intake, brief, qa
-  app/queue.py               Postgres queue client
-  runner.py                  queue consumer (fallback path when the API is down)
-supabase/migrations          schema, RLS, job queue
+  app/handlers/              intake, brief, qa, revision
+  app/assistant.py            in-app chat loop with tool calling
+  app/assistant_tools.py      9 allowlisted tools + argument validation
+  app/social.py               portfolio drafts + X publishing (OAuth 1.0a)
+  app/outbound.py             outbound queue + human-approval delivery
+  app/queue.py                Postgres queue client
+  runner.py                   queue consumer (fallback path when the API is down)
+supabase/migrations           schema, RLS, job queue, assistant, portfolio (0001–0018)
 supabase/seed.sql            demo tenant with 8 projects
-docs/DATABASE.md             table map, isolation notes, verification queries
+docs/                        DATABASE, AUTH, BILLING, ASSISTANT, PORTFOLIO,
+                             DISCORD_TESTING, SECURITY, HANDOFF
 ```
 
 ## Quick start (demo mode, no credentials)
@@ -85,8 +98,9 @@ a deterministic FakeLLM.
 
 ## Supabase setup
 
-1. Create a project, then run the migrations in order:
-   `supabase db push` (or paste `0001`, `0002`, `0003` in the SQL editor).
+1. Create a project, then apply every migration in order:
+   `supabase db push` (the files are `0001` through `0018`; several later ones
+   depend on earlier ones, so do not skip).
 2. Load the demo data: `supabase db reset` runs `seed.sql` automatically.
 3. Copy `apps/web/.env.example` to `apps/web/.env.local` and fill:
    `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
@@ -120,11 +134,14 @@ Queue consumer (separate process, drains the fallback queue):
 ```
 
 Endpoints: `POST /intake`, `/conversation/continue`, `/qa/check`, `/followup/run`,
-`/report/generate`, `GET /health`. All but `/health` require
+`/report/generate`, `/revision/create`, `/invoice/create`, `/invoice/paid`,
+`/notify`, `/notify/approve`, `/notify/reject`, `/conversation/reply`,
+`/assistant/chat`, `/portfolio/draft`, `/portfolio/publish`, `/portfolio/reject`,
+and `GET /health`. All but `/health` require
 `Authorization: Bearer $INTERNAL_WORKER_TOKEN`.
 
-Tests: `PYTHONPATH=apps/worker .venv/Scripts/python -m pytest tests -q` (97 passing,
-no network, no database).
+Tests: `PYTHONPATH=apps/worker .venv/Scripts/python -m pytest tests -q`
+(**142 passing**, no network, no database).
 
 ## Discord setup
 
@@ -143,7 +160,13 @@ Web (`apps/web/.env.local`):
 | `NEXT_PUBLIC_SUPABASE_URL` / `_ANON_KEY` | enable the live data path |
 | `SUPABASE_SERVICE_ROLE_KEY` | server-only admin client |
 | `INTERNAL_WORKER_TOKEN` | shared secret with the worker |
-| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | billing (not wired yet) |
+| `INTERNAL_WORKER_URL` | worker base URL (default `http://127.0.0.1:8080`) |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | billing |
+| `DISCORD_CLIENT_ID` / `_SECRET` | OAuth connect flow |
+
+Per-tenant keys (`LLM_API_KEY`, `STRIPE_SECRET_KEY`, `RESEND_API_KEY`, the four
+`X_*` credentials) are entered in **Settings → Integrations** and stored in
+Supabase Vault, not in this file.
 
 Worker (`apps/worker/.env`): `APP_ENV`, `DATABASE_URL`, `INTERNAL_WORKER_TOKEN`,
 `LLM_API_KEY`, `LLM_MODEL_FAST/MID/VISION`, `DISCORD_BOT_TOKEN`,
@@ -221,6 +244,29 @@ production; `X-Powered-By` is disabled.
 - Follow-up: stale projects → drafted nudges (respects 24h cadence in the caller).
 - Reporting: completion summary markdown.
 
+**Assistant and portfolio**
+- In-app chat at `/assistant`. The model can call nine tools: `studio_overview`,
+  `list_projects`, `get_project`, `list_tasks`, `create_project`,
+  `update_project_status`, `create_task`, `log_revision`,
+  `draft_customer_message`. No delete tools, and the tenant comes from the
+  session rather than the model.
+- Every tool call is written to the audit log as `tool:<name>` with summarised
+  arguments, so the transcript shows what changed and why.
+- `draft_customer_message` only queues an `outbound_messages` row; a human still
+  approves it before anything reaches the customer.
+- When a project becomes `delivered` or `approved`, the worker drafts an
+  Indonesian caption from up to four image deliverables. `/portfolio` lets a
+  designer edit the caption, publish to X, or reject it.
+- X publishing uses OAuth 1.0a with per-tenant credentials from Supabase Vault.
+  Without a connected account the post is marked `failed` with a readable reason
+  instead of silently disappearing.
+
+**Notifications**
+- In-app notifications at `/notifications` when a task is assigned or a project
+  changes status, plus transactional email through Resend when
+  `RESEND_API_KEY` is configured (best-effort: a delivery failure never breaks
+  the worker action that triggered it).
+
 **Safety**
 - RLS on every tenant table; audit table is append-only.
 - Worker guards every query with `require_tenant_id`.
@@ -242,6 +288,17 @@ crimson `#A21A24`. Inter for UI, JetBrains Mono for references, asset IDs and co
 ## Known gaps
 
 See [`docs/HANDOFF.md`](docs/HANDOFF.md) for the full, prioritized list. Summary:
-designer notifications (email/in-app), payments/Robux, realtime, routing the bot's
-own replies through the approval path, and the unused tRPC layer. RLS policies
-assume a `tenant_id` JWT claim; configure the auth hook before launch.
+
+- **Payments/Robux** — `payment_status` is edited by hand; there is no rate
+  tracking, invoice generation or payment follow-up agent.
+- **The bot's fast-path reply bypasses the approval queue.** Worker-originated
+  messages are gated; a direct reply from `bot.py` is not yet routed through
+  `app/outbound.py`.
+- **tRPC is scaffolded but unused.** The UI uses server components and server
+  actions; `src/server/routers` is only reachable via `/api/trpc`.
+- **No end-to-end browser tests yet.** Worker logic is covered by pytest; the
+  dashboard is verified manually.
+- **Realtime requires the `supabase_realtime` publication** (migration `0015`).
+  Without it the dashboard still works but only updates on navigation.
+- **Deployment is not automated.** There is a Dockerfile for the worker; the web
+  app has no deployment config in the repo.

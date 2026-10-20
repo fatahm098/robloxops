@@ -7,8 +7,9 @@ before starting: it has the current state and the prioritized remaining backlog.
 
 Multi-tenant B2B SaaS for Roblox design studios. A studio links a Discord server;
 the platform handles commission intake, brief collection, project records, the
-designer queue and delivery notifications. Planning doc lives at
-`../roblox-studio-saas-plan.md`. UI reference: `../robloxops-design/`.
+designer queue, delivery notifications, portfolio drafts and an in-app assistant.
+The original product plan and UI reference are kept outside this repository; do
+not link to them from tracked files.
 
 ## Layout
 
@@ -18,20 +19,33 @@ apps/web                 Next.js 15 App Router + TypeScript + Tailwind
   src/lib/insights.ts    analytics/agents/audit/billing reads (mock <=> Supabase)
   src/lib/tenant.ts      tenant settings + team count reads (mock <=> Supabase)
   src/lib/mock.ts        demo dataset used when Supabase env is absent
+  src/lib/realtime.ts    postgres_changes -> debounced router.refresh()
+  src/lib/assistant.ts   assistant thread/history reads
+  src/lib/portfolio.ts   portfolio posts + social account reads
   src/server/            tRPC routers (currently only reachable via /api/trpc)
   src/app/(dashboard)/** server components + server actions
 apps/worker              Python 3.12 FastAPI worker + Discord bot + queue runner
   app/handlers/          intake, brief, qa, revision
+  app/assistant.py       chat loop, history, audit
+  app/assistant_tools.py 9 allowlisted tools + argument validation
+  app/social.py          portfolio drafts + X publishing (OAuth 1.0a)
   app/discord.py         Discord REST sender (bot token)
   app/outbound.py        outbound queue + human-approval delivery
   app/secrets.py         per-tenant secrets (Supabase Vault) reads
   app/routing.py         least-loaded designer assignment
   app/followups.py       follow-up persistence + sending (rate-limited)
+  app/notifications.py   in-app + email notifications
+  app/invoices.py        invoice helpers
+  app/email.py           Resend delivery (best-effort)
   app/reports.py         report persistence helpers
   app/queue.py           Postgres queue client
   runner.py              queue consumer + follow-up cron sweep
-supabase/migrations      0001..0012 (schema, RLS, jobs, provisioning, billing, storage, revisions, followups, reports, outbound/takeover, tenant secrets)
-docs/                    DATABASE.md, AUTH.md, BILLING.md, HANDOFF.md
+supabase/migrations      0001..0018 (schema, RLS, jobs, provisioning, billing,
+                         storage, revisions, followups, reports, outbound/takeover,
+                         tenant secrets, notifications, invoices, realtime,
+                         assistant chat, social portfolio, app_metadata claim)
+docs/                    DATABASE, AUTH, BILLING, ASSISTANT, PORTFOLIO,
+                         DISCORD_TESTING, SECURITY, HANDOFF
 ```
 
 ## Commands (Windows PowerShell, run from repo root)
@@ -69,13 +83,18 @@ Worker API / bot / queue consumer (see apps/worker/README.md):
 6. **Structured LLM output only.** Worker handlers validate with Pydantic;
    invalid output escalates (`agent_audit_log.status='escalated'`) and writes no
    domain data.
-7. **Do not commit** unless the user explicitly asks.
+7. **No claims for unbuilt features.** README, docs and commit messages describe
+   what exists and is verified. Do not invent metrics, test counts or screenshots.
+8. **Commits.** Do not commit unless the user asks. When the user asks for
+   phase-by-phase work, make one commit per phase with a clear message, and run
+   the verification gates below first.
 
 ## Verification gates (must pass before you claim done)
 
 - `npm --workspace apps/web run typecheck`
 - `npm --workspace apps/web run build`
-- worker `pytest` (97 tests currently) + `compileall`
+- worker `pytest` (142 tests currently) + `compileall`
+- `npm run scan:secrets` (no findings)
 
 ## Where things are going
 

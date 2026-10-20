@@ -1,389 +1,147 @@
-# RobloxOps — Handoff / Memory
+# RobloxOps — Handoff
 
-> Purpose: if the current agent runs out of credits, the next agent (any tool)
-> should be able to resume from this file alone. It is the source of truth for
-> "what is done" and "what is left". Read `AGENTS.md` first for rules/commands.
+> Purpose: a new agent (or a future you) should be able to resume from this file
+> alone. It states what exists, how to verify it, and what is left. Read
+> `AGENTS.md` first for the rules and commands.
 
-Snapshot: **2026-10-19** · branch `master` · last commit `d2c93e2`
-("feat: RobloxOps MVP scaffold") · the entire feature build below is **uncommitted
-in the working tree**. Nothing has been committed since that scaffold.
+**Snapshot: 2026-10-20** · branch `master` · commit `058d1b7`
+("feat: assistant chat, portfolio publishing, notifications and security
+hardening") · working tree clean.
 
 ## Status at a glance
 
 | Area | State |
 |---|---|
-| Postgres schema, RLS, per-tenant reference codes | done (0001–0002) |
-| Postgres job queue (`claim_jobs`/`complete_job`/`fail_job` + kind filter + reaper) | done (0003, 0006) |
-| Tenant provisioning RPC (`provision_tenant`) | done (0004) |
-| Stripe billing (checkout/portal/webhook, `billing_events`) | done (0005) |
-| Deliverables storage bucket + policies | done (0007) |
-| Revisions table + RLS | done (0008) |
-| Follow-ups table + RLS + worker persistence | done (0009) |
-| Reports table + RLS + worker persistence | done (0010) |
-| Outbound Discord delivery (worker → Discord REST) | done (0011, `app/discord.py`) |
-| Human-approval outbound queue + per-project takeover | done (0011) |
-| Per-tenant integration secrets in Supabase Vault | done (0012, `app/secrets.py`) |
-| Per-tenant LLM key resolved by the worker | done this session |
-| Follow-up sending (bot/Discord send, 1/24h + max 3 → escalate) | done this session |
-| Tenant billing period (`tenants.current_period_end`) | done (0005) |
-| FastAPI worker: intake, brief, QA, follow-up, report | implemented AND persisting (follow-ups, reports) |
-| Discord bot: monitored channels, threads, `/status` `/brief` `/revision` `/help` | fixed; needs a real guild to run |
-| Discord OAuth callback (`/api/discord/callback`) | wired this session; needs `DISCORD_CLIENT_ID/SECRET` |
-| Next.js dashboard: overview, projects, detail, tasks, audit, customers, deliverables, revisions, agents, analytics, billing, settings, onboarding, auth | built; all surface values/actions now live (demo fallback) |
-| Billing page (credits, renewal, invoices) | live this session (0011 + `getBillingSummary`) |
-| Settings defaults/channels + GDPR workspace-data delete | live this session |
-| Onboarding step completion | computed live this session |
-| Sidebar badges + `/analytics` link | live this session |
-| Projects table filters/pagination/selection/CSV export | live this session |
-| Overview cards + widget actions (QA approve/flag, chips) | live this session |
-| Deliverable upload flow (signed URL → storage → queue QA) | wired earlier session |
-| Project status actions (revision / delivered / send-to-customer / report download) | wired earlier + this session |
-| AI pause switch (global + per-agent via `tenants.settings`) | wired + enforced end-to-end (handlers + queue, this session) |
-| tRPC API | scaffolded but **unused** by the UI |
-| Designer notifications (email/push/in-app), payments/Robux, realtime | not done |
+| Postgres schema, RLS, per-tenant reference codes | done (`0001`–`0018`) |
+| Job queue (`claim_jobs` / `complete_job` / `fail_job` + reaper) | done (`0003`, `0006`) |
+| Tenant provisioning RPC (`provision_tenant`) | done (`0004`) |
+| Stripe billing (checkout / portal / webhook, `billing_events`) | done (`0005`) |
+| Deliverables storage bucket + policies | done (`0007`) |
+| Revisions table + RLS | done (`0008`) |
+| Follow-ups table + RLS + persistence + sending | done (`0009`) |
+| Reports table + RLS + persistence | done (`0010`) |
+| Outbound Discord delivery + approval queue + takeover | done (`0011`) |
+| Per-tenant secrets in Supabase Vault | done (`0012`) |
+| Notifications (in-app + Resend email) | done (`0013`) |
+| Invoices | done (`0014`) |
+| Realtime publication + client refresh helper | done (`0015`) |
+| Assistant chat + 9 audited tools | done (`0016`) |
+| Portfolio drafts + X publishing | done (`0017`) |
+| `current_tenant_id()` reads `app_metadata` | done (`0018`) |
+| FastAPI worker: 16 endpoints | done |
+| Discord bot: channels, threads, `/status` `/brief` `/revision` `/help` | done, needs a real guild |
+| Next.js dashboard: 19 pages + 6 API routes | done |
+| CI: typecheck + build + pytest + compileall | done (`.github/workflows/ci.yml`) |
+| Browser end-to-end tests | **not started** |
+| RLS integration tests (two tenants, live Postgres) | **not started** |
+| Structured logging / runbook / health page | **not started** |
+| tRPC API | scaffolded, unused by the UI |
+| Payments / Robux | not started |
 
-## Verify (current results)
+## Verification (run these, not the old numbers)
 
 ```powershell
-$env:PYTHONPATH="apps/worker"; & "apps/worker/.venv/Scripts/python.exe" -m pytest apps/worker/tests -q   # 97 passed
-& "apps/worker/.venv/Scripts/python.exe" -m compileall -q apps/worker                                     # clean
-npm --workspace apps/web run typecheck                                                                    # clean
-npm --workspace apps/web run build                                                                        # 23 pages, OK
+# from the repo root
+npm run typecheck                                   # tsc --noEmit, clean
+npm run build                                       # next build, succeeds
+npm run scan:secrets                                # no findings
+npm run scan:secrets:all                            # includes git history
+
+# worker (offline: fake DB + FakeLLM, no network)
+cd apps/worker
+.venv/Scripts/python.exe -m pytest -q               # 142 passed
+.venv/Scripts/python.exe -m compileall -q app       # clean
 ```
 
-## Completed in the 2026-10-19 session (P0 backlog)
+Last run of all of the above on 2026-10-20: green.
 
-### #5 `ai_paused` end-to-end
-- Gap found: the bot fast path was already gated transitively (paused intake
-  handlers return `escalated`, no reply), but the **queue path** ran `qa_check` for
-  paused tenants (`qa` had no pause short-circuit like intake/brief).
-- `apps/worker/runner.py` — guards `qa_check` via `escalate_if_ai_paused`; paused →
-  job completes without running QA.
-- `apps/worker/app/handlers/__init__.py` — additive `escalate_if_ai_paused(...)`
-  helper (`action="ai_paused"`, `escalated` audit row).
-- `apps/worker/bot.py` — unchanged (delegates to handlers).
-- Tests: `tests/test_queue.py` (paused skips + audits QA), `tests/test_bot.py`
-  (paused channel/thread → no reply, inbound recorded, escalated; `/help` `/status`
-  still answer while paused).
+## What exists
 
-### #2 Report persistence
-- `supabase/migrations/0010_reports.sql` — `reports` table, unique
-  `(tenant_id, project_id, kind)`, index, RLS (mirrors 0002).
-- `apps/worker/app/reports.py` (NEW) — `persist_report` upsert + audit
-  (`project_manager`/`report_generated`), tenant-scoped.
-- `apps/worker/app/main.py` — `/report/generate` persists and returns `report_id`
-  (Markdown response unchanged). `models.py` — additive `ReportRequest.kind`
-  (default `delivery`), `ReportResult.report_id`.
-- Web: `insights.ts` — `getProjectReport`/`listReports` (demo → null);
-  `projects/actions.ts` — best-effort report generate on `delivered`, new
-  `fetchProjectReport`; `project-actions.tsx` — "Download report" button.
-- Tests: `tests/test_reports.py` (upsert, kind separation, audit, tenant scope).
+**Worker** (`apps/worker`): FastAPI app with 16 token-guarded endpoints plus an
+open `/health`. Five pipeline handlers (intake, brief, qa, revision, plus
+follow-up/report helpers), a Postgres-backed queue consumer (`runner.py`), a
+Discord bot, per-tenant LLM resolution (tenant Vault key → env key → `FakeLLM`),
+outbound delivery with human approval, notifications, invoices, the assistant
+loop with tool calling, and portfolio drafting/publishing.
 
-### #4 Discord OAuth callback
-- `src/app/api/discord/callback/route.ts` (NEW) — GET handler: guards missing env
-  (`?discord=unconfigured`), missing `code` (`?discord=error`), no session/tenant
-  (→ `/login?next=/onboarding`); exchanges the code at Discord's token endpoint
-  (form-encoded), reads guild id from the partial `guild.id` else `guild_id`,
-  updates `tenants.discord_guild_id` via the user-scoped client, maps unique
-  violation to `?discord=taken`, success → `/onboarding?discord=connected`. No
-  secret/token logging; no bot token stored.
-- `src/app/(dashboard)/onboarding/page.tsx` — step 1 `done` now reflects
-  `tenant.discordGuild` (real id vs `"Not connected"`).
-- `apps/web/.env.example` — added `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`.
+**Web** (`apps/web`): Next.js 15 App Router. Every page reads Supabase when the
+env is present and falls back to `src/lib/mock.ts` when it is not. Mutations go
+through server actions that return `{ ok, message }`. Realtime refresh is mounted
+in the dashboard layout.
 
-### #3 Revision workflow
-- `supabase/migrations/0008_revisions.sql` — `revisions` table + 2 indexes + RLS
-  (mirrors 0002).
-- `apps/worker/app/handlers/revision.py` — `create_revision` validates
-  project↔tenant, inserts, sets `projects.status='revision'` and bumps
-  `revision_count`, logs audit (`project_manager`/`revision_created`).
-- `apps/worker/app/main.py` — `POST /revision/create` (token router), `ValueError`
-  → 404. `apps/worker/app/models.py` — additive `RevisionCreateRequest`.
-- `apps/worker/bot.py` — `BotRepo.create_revision` + `/revision` slash command
-  (decorator-registered, tenant-scoped); `/help` updated.
-- `src/lib/insights.ts` — `listRevisions` is now live (tenant-scoped join to
-  `projects`, `created_at desc`, limit 100) with demo fallback.
-- `src/app/(dashboard)/revisions/page.tsx` + `components/revisions/revisions-table.tsx`
-  (NEW) + one sidebar link (`Repeat2`, label "Revisions").
-- Tests: `tests/test_revision.py`; `tests/test_bot.py` command set updated.
-
-### #1 Follow-up persistence
-- `supabase/migrations/0009_followups.sql` — `followups` table (nullable
-  `project_id`/`customer_id`, kind/status checks, `payload jsonb`, 3 indexes, RLS).
-- `apps/worker/app/followups.py` (NEW) — `record_followup`, `list_due_followups`,
-  `run_followup` (insert + `project_manager`/`followup_sent` audit), tenant-scoped.
-- `apps/worker/app/main.py` — `/followup/run` now persists each draft and returns
-  `followup_id` (response shape otherwise unchanged). `models.py` —
-  `FollowUpDraft.followup_id`.
-- Tests: `tests/test_followups.py`. Web was intentionally NOT wired (no follow-up
-  surface on the dashboard yet).
-
-## Completed in the 2026-10-19 session (earlier)
-
-### Worker / bot bug fixes
-- `apps/worker/bot.py` — removed duplicate `tree.add_command(...)` calls that
-  raised `CommandAlreadyRegistered` at startup (`@self.tree.command` already
-  registers). Tests: `tests/test_bot.py`.
-- `apps/worker/app/queue.py` + `supabase/migrations/0006_jobs_queue_fixes.sql` —
-  queue dedup key aligned to `payload->>'message_id'` (unique index), `ENQUEUE_SQL`
-  now `ON CONFLICT DO NOTHING`, `claim_jobs(worker_id, batch, kinds)` filters kinds
-  in SQL (no more leaked `running` jobs), added `reap_stale_jobs()`.
-- `apps/worker/runner.py` — claims only handled kinds, fails unknown kinds
-  gracefully, reaps stale jobs at startup + every 30 iterations.
-- `apps/worker/Dockerfile` — now `COPY runner.py`.
-- `apps/worker/app/models.py` — `ProjectType` uses `other` (matches the DB CHECK;
-  removed the `unknown`→NULL workaround in intake).
-- `apps/worker/app/handlers/{intake,brief}.py` + `handlers/__init__.py` — enforce
-  `tenants.settings.ai_paused`: inbound is still recorded, an `escalated` audit
-  row is written, no LLM call, no Discord reply.
-- `apps/worker/app/handlers/qa.py` + `models.py` — QA report uses the UI shape
-  `{checks:[{label,value,passed}], score, max_score, summary}`; vision URL is
-  forwarded when `file_path` is an http(s) URL.
-- `apps/worker/app/llm.py` — retry on `HTTPStatusError` 429/5xx; `FakeLLM` gained
-  a `revision` draft purpose.
-- Tests: `test_brief.py`, `test_qa.py` added; `test_intake.py`, `test_models.py`,
-  `test_queue.py` updated. **20 → 34 passing.**
-
-### Web live-data wiring
-- `src/lib/insights.ts` — `getAnalytics` and `getAgentStatuses` now query Supabase
-  (projects, deliverables, agent_audit_log, tenants.settings) with the demo
-  fallback; added `listAuditEntries`, `getAgentPauseState`. `listRevisions` stays
-  demo-only (no `revisions` table).
-- `src/lib/data.ts` — `listCustomers` computes live `activeProjects`,
-  `totalSpentUsd`, `lastOrderAt`, `state`; exported `readContext`/`withFallback`.
-- `src/app/(dashboard)/audit/page.tsx` — reads live audit entries, demo fallback;
-  added `components/audit/audit-export-button.tsx` (JSON export).
-- `src/app/(dashboard)/agents/page.tsx` — live statuses + wired Pause-all /
-  per-agent Pause·Resume via `src/app/(dashboard)/agents/actions.ts`
-  (`tenants.settings.ai_paused` and `settings.agents_paused`), with
-  `components/agents/*` client controls. Buttons are disabled in demo mode.
-- `src/app/(dashboard)/analytics/page.tsx` — chart math guarded for empty data.
-
-### Web upload + project actions
-- `supabase/migrations/0007_storage.sql` — private `deliverables` bucket +
-  tenant-prefix storage policies.
-- `src/app/(dashboard)/deliverables/actions.ts` — `prepareUpload` (validate,
-  signed upload URL via service role, insert `deliverables` row with next
-  version) and `finalizeUpload` (enqueue `qa_check` job).
-- `src/components/deliverables/upload-panel.tsx` — real client upload:
-  prepare → `storage.uploadToSignedUrl` → finalize → refresh. Disabled in demo.
-- `src/app/(dashboard)/deliverables/page.tsx` — passes open projects to the panel;
-  header button anchors to `#upload-panel`.
-- `src/app/(dashboard)/projects/actions.ts` — `updateProjectStatus` (audit row
-  `human:<id>`) and `createDeliverableDownloadUrl` (signed URL).
-- `src/components/project-detail/project-actions.tsx` (header) — Request Revision
-  → `revision`, Mark Delivered → `delivered`, Download → signed URL of the final
-  deliverable. `deliverable-actions.tsx` — Send to Customer → `customer_review`,
-  3D viewer intentionally disabled.
-
-## Completed in the 2026-10-19 session (P1 UI wiring)
-
-Built by four parallel agents on disjoint files (owner in parentheses), then the
-final typecheck + build + `pytest` were run on the merged tree.
-
-### Dashboard live values + overview widgets (A)
-- `src/lib/types.ts` — additive `OverviewStats`: `qaCheck`, `inDesign`,
-  `highPriorityOpen`.
-- `src/lib/data.ts` — `DataContext` gains `userId`/`email`; `getOverview()` returns
-  `viewerName` (users row → email local-part → `"Alex"`) and computes the new
-  counts; demo fallback updated.
-- `src/app/(dashboard)/page.tsx` — live greeting, live QA/Design counts, live
-  bottleneck count; removed the un-derivable "94% efficiency"/"● Live Feed"
-  claims; "Connect Discord Server" → `<Link href="/api/discord/authorize">`.
-- `src/components/overview/qa-preview.tsx` — now client; real `qaScore/qaScoreMax`,
-  spec text when present; "Approve & Export Package" / "Flag Revision" call
-  `updateProjectStatus("approved"|"revision")` (disabled in demo).
-- `src/components/overview/team-allocation.tsx` — "Rebalance Task Queue" → `/tasks`.
-- `src/components/overview/urgent-deliverables.tsx` — filter chips are live Links
-  to `/projects?status=…` with counts from props; Critical badge computed.
-
-### Billing live (B)
-- `src/lib/insights.ts` — additive `getBillingSummary()` (tenant row incl.
-  `current_period_end` from 0005 + invoices mapped defensively from
-  `billing_events`, `[]` otherwise).
-- `src/app/(dashboard)/billing/page.tsx` — live credits/renewal/invoices; "No
-  invoices yet" empty state; demo path unchanged (`demo: true`).
-
-### Settings + onboarding live (C)
-- `src/lib/tenant.ts` (NEW) — `getTenantSettings()` (tenant row + users count,
-  demo fallback).
-- `src/app/(dashboard)/settings/page.tsx` — real `defaults` from `tenant.settings`,
-  live monitored channels, plan badge, demo banner.
-- `src/app/(dashboard)/settings/actions.ts` — `deleteWorkspaceData(confirmation)`
-  (owner-gated via `users` role + admin client, requires literal `DELETE`, wipes
-  tenant-owned rows in FK-safe order incl. storage objects; never deletes the
-  tenant/users/auth users; disabled in demo) +
-  `components/settings/delete-workspace-button.tsx` confirm modal.
-- `src/app/(dashboard)/onboarding/page.tsx` — every `STEPS[].done` computed live.
-
-### Shell + projects UI (D)
-- `src/app/(dashboard)/layout.tsx` — fetches project/task counts, passes to Sidebar.
-- `src/components/shell/sidebar.tsx` — live badges; "Discord Comm" → `/settings`;
-  added `/analytics` link.
-- `src/app/(dashboard)/projects/page.tsx` + `components/projects/*` — assignee +
-  deadline-month filters, rows-per-page, real pagination (Link-based, param
-  preserving), selection state and working CSV export
-  (`projects-table-client.tsx`, `project-csv.ts`, `projects-export-button.tsx`).
-
-## Completed in the 2026-10-19 session (automation: outbound, takeover, auto-tasks, follow-ups)
-
-Built in two waves by parallel agents; gates run on the merged tree (**82 tests, 23 pages**).
-
-### Wave 1 — worker outbound core
-- `supabase/migrations/0011_outbound_takeover.sql` — `outbound_messages` (queue with
-  `pending/sent/rejected/failed`, RLS), and `projects.human_takeover` /
-  `takeover_by` / `takeover_at`.
-- `apps/worker/app/discord.py` (NEW) — `send_message(channel_id, content, *, token, client)`
-  posting to the Discord REST API with the bot token; `DiscordSendError`. No token logging.
-- `apps/worker/app/outbound.py` (NEW) — `send_or_queue` (honours `settings.approval_mode`:
-  `auto` sends, `preview`/`human` queue for approval; skips when `ai_paused`),
-  `approve_outbound` / `reject_outbound`, `send_manual_reply` (always sends),
-  `deliver` (marks sent, logs an outbound `conversations` row + audit; Discord failure
-  → `failed` + audit, never raises). Deterministic `default_body` templates (no LLM).
-- `app/main.py` — protected endpoints `POST /notify`, `/notify/approve`, `/notify/reject`,
-  `/conversation/reply`; `app/models.py` additive request/result models.
-- Tests `tests/test_outbound.py` (mock `httpx.MockTransport`).
-
-### Wave 2A — web approvals + takeover (agent, web files)
-- `src/lib/outbound.ts` (NEW) `listPendingOutbound`. `getProjectDetail` now also returns
-  `humanTakeover` + `outboundPending`.
-- `projects/actions.ts` — `sendDeliverableToCustomer`, `sendProjectStatusUpdate`,
-  `sendConversationReply`, `approveOutbound`, `rejectOutbound`, `setHumanTakeover`
-  (Supabase-only, audited). All call the worker via the existing token pattern.
-- `conversation-panel.tsx` — reply composer + takeover toggle + "AI paused" banner;
-  new `outbound-approvals.tsx` (Approve/Reject cards). "Send to Customer" and
-  "Mark Delivered" now actually post to Discord.
-
-### Wave 2B — auto-tasks + routing + takeover short-circuit (agent, worker)
-- `app/routing.py` (NEW) `pick_designer` — least-loaded `designer`/`manager`, owner fallback.
-- `handlers/brief.py` — `ensure_design_task` (idempotent) runs after a successful brief;
-  `handle_continue` returns `status="human_takeover"` and skips the LLM when the project
-  is taken over. `models.ContinueResult` gained that status.
-
-### Wave 2C — follow-up sending + cron (agent, worker)
-- `app/followups.py` — `send_followup` / `send_due_followups`: real Discord send with
-  limits (max 1/project/24h, max 3 then `skipped` + escalated audit), outbound
-  conversation + audit. `app/db.py` — `all_tenant_ids()`.
-- `runner.py` — `sweep_followups` every `FOLLOWUP_SWEEP_SECONDS=900` across tenants.
-
-### CI
-- `.github/workflows/ci.yml` (NEW) — `web` (npm ci → typecheck → build) and `worker`
-  (pip install → pytest → compileall) jobs on push/PR.
-
-## Completed in the 2026-10-19 session (per-tenant secrets + LLM)
-
-Goal: let an operator set API keys from the dashboard instead of only env files.
-
-- `supabase/migrations/0012_tenant_secrets.sql` — `tenant_secrets` (metadata +
-  `last4` only; RLS select for the tenant, no write policies) plus
-  `public.set_tenant_secret` / `delete_tenant_secret` / `get_tenant_secret`
-  SECURITY DEFINER functions backed by **Supabase Vault**, granted to
-  `service_role` only. Degrades to raising stubs when Vault is absent (worker then
-  falls back to env).
-- `apps/worker/app/secrets.py` (NEW) — `get_tenant_secret`, `tenant_llm_overrides`.
-- `apps/worker/app/llm.py` — `get_llm(settings, *, api_key, base_url, model_fast,
-  model_mid, model_vision)` + `build_llm_for_tenant(db, tenant_id, settings)`.
-- `app/main.py` + `runner.py` — resolve the LLM **per tenant** (tenant key →
-  env `LLM_API_KEY` fallback; offline ⇒ `FakeLLM`). `/health` still reports the
-  process default.
-- Web: `lib/secrets.ts` (`listSecretStatuses`, `setTenantSecret`,
-  `deleteTenantSecret`, `readTenantSecret`); Settings gains an
-  **Integrations / API Keys** section (`components/settings/integrations-form.tsx`)
-  with masked inputs for `LLM_API_KEY`, `LLM_BASE_URL`, `STRIPE_SECRET_KEY`,
-  `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY` + model overrides; `DISCORD_BOT_TOKEN`
-  is shown as platform-global (env) by design.
-- Stripe per tenant: `getStripeForTenant(tenantId)` reads the vaulted
-  `STRIPE_SECRET_KEY` (env fallback); checkout/portal resolve it from the session
-  tenant. Webhook signature secret stays env-global.
-
-> Discord bot token and the internal worker token remain **global infra** (one
-> gateway bot process, one web↔worker shared secret); only guild connection is
-> per tenant.
+**Database**: 18 migrations, 23 tables, RLS enabled on every table with
+`tenant_id = current_tenant_id()`. `current_tenant_id()` reads the top-level
+`tenant_id` claim and falls back to `app_metadata.tenant_id`.
 
 ## Remaining backlog (prioritized)
 
-### P0 — correctness / completeness of the MVP workflow
-_All P0 items are now done:_ report persistence (0010), `ai_paused` end-to-end
-(runner + `escalate_if_ai_paused`), follow-up persistence (0009), revision
-workflow (0008), Discord OAuth callback. See the session sections above.
+### P0 — correctness
 
-### P1 — wire the remaining inert UI
-_All P1 items are now done_ (see "Completed in the 2026-10-19 session (P1 UI
-wiring)" below). Nothing left in P1.
+1. **The bot's fast-path reply bypasses the approval queue.** `bot.py` sends the
+   intake/continue reply directly; only worker-originated messages go through
+   `app/outbound.py`. Route the bot reply through `/notify` or `outbound.py`.
+2. **`app/db.py` guard is weaker than its docstring.** `require_tenant_id` only
+   checks that the argument is truthy; it does not inspect the SQL text. Either
+   add a check that the statement contains `tenant_id` or narrow the claim.
 
-The earlier create-actions / task-status work (also done): `createProject` +
-`createTask` dialogs, dashboard "Upload Deliverable" link, and the task board
-status mutation (`updateTaskStatus` + `TaskStatusMenu`). Files:
-`src/app/(dashboard)/projects/actions.ts`, `src/app/(dashboard)/tasks/actions.ts`,
-`src/components/projects/create-project-dialog.tsx`,
-`src/components/tasks/create-task-dialog.tsx`, `src/components/tasks/task-status-menu.tsx`,
-`src/components/tasks/task-row.tsx`, `src/components/tasks/task-board.tsx`,
-`src/components/ui/modal.tsx`.
+### P1 — proof
 
-### P2 — robustness / tech debt
-11. **tRPC is dead code.** `src/trpc/react.tsx` `TRPCReactProvider` is never
-    mounted; routers in `src/server/routers/*` are only reachable via
-    `/api/trpc`. Decide: mount + migrate mutations, or delete.
-12. **`apps/worker/app/db.py`** claims to reject non-tenant SQL but only checks the
-    `tenant_id` argument is truthy. Either enforce SQL text inspection or fix the
-    docstring/README claim.
-13. **Seed tenant has no `monitored_channel_ids`** in `tenants.settings`
-    (`supabase/seed.sql`), so the bot monitors nothing for the demo tenant.
-14. **Reference-code doc drift:** README says `ROB-{YY}{seq:04d}`; the DB function
-    `next_reference_code` returns `ROB-{seq}`. Align docs or function.
-15. **Unused worker config:** `supabase_url`, `supabase_service_role_key`,
-    `discord_application_id` in `apps/worker/app/config.py` are never read.
-16. **Designer notifications.** Nothing tells a designer a task was assigned;
-    add email (Resend/SES) and/or an in-app bell. Hook: `ensure_design_task`
-    in `apps/worker/app/handlers/brief.py`; web: dashboard/header.
-17. **Report regenerate UX.** `project-actions.tsx` lazily loads the report via
-    `fetchProjectReport`; thread the report through the project detail page/header
-    as a prop so it is server-rendered (the prop path already takes precedence).
-18. **Payments / Robux.** `payment_status` exists but is edited by hand; no Robux
-    rate tracking, invoice generation, payment gate or payment follow-up agent
-    (plan P3). Files: `projects/actions.ts`, a new worker agent.
-19. **Approval-mode polish.** `outbound.py` honours `settings.approval_mode`
-    (`auto`/`preview`/`human`) but there is no settings UI to choose per-action
-    gates (first message / brief / deliverable). Extend `settings-form.tsx`.
-20. **Bot fast path bypasses approval.** The bot sends the intake/continue reply
-    directly (`bot.py`); only the worker outbound path is gated. Route the bot's
-    own replies through `app/outbound.py` (or the `/notify` endpoint) for full
-    consistency.
-21. **Realtime.** Dashboard is server-rendered/polled; no Supabase Realtime.
+3. **Browser end-to-end tests.** No Playwright suite; the dashboard is verified by
+   hand.
+4. **RLS integration tests.** Isolation is asserted by policy review, not by a
+   test that logs in as two tenants against a real Postgres.
+5. **Observability.** Logs are plain text; there is no correlation id, no queue
+   depth on `/health`, and no operator runbook.
+
+### P2 — polish
+
+6. **tRPC is dead code.** `TRPCReactProvider` is never mounted; routers are only
+   reachable via `/api/trpc`. Delete it or migrate mutations.
+7. **Seed tenant has no `monitored_channel_ids`**, so the bot monitors nothing for
+   the demo tenant out of the box.
+8. **Reference-code doc drift.** README historically said `ROB-{YY}{seq:04d}`; the
+   function returns `ROB-{seq}`. The function is the source of truth.
+9. **Unused worker config:** `supabase_url`, `supabase_service_role_key`,
+   `discord_application_id` are declared in `app/config.py` but never read.
+10. **Payments / Robux.** `payment_status` is edited by hand; no rate tracking,
+    invoice generation or payment follow-up agent.
+11. **Deployment is manual.** The worker has a Dockerfile; the web app has no
+    deployment config in the repo.
 
 ## Environment setup checklist (not in repo — required to run live)
 
-- **Supabase**: create project, apply migrations `0001`→`0012` in order
-  (`supabase db push`), load `supabase/seed.sql` (`supabase db reset`), configure
-  the `tenant_id` JWT claim (see `docs/AUTH.md`), create the `deliverables`
-  bucket (0007 does this), and ensure the **Vault** extension is available
-  (0012). Web env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-  `SUPABASE_SERVICE_ROLE_KEY`, `INTERNAL_WORKER_TOKEN`.
-  Per-tenant LLM/Stripe keys are set in **Settings → Integrations** (Vault) and
-  override the env values.
-- **Stripe** (optional): `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-  `STRIPE_PRICE_STARTER/_GROWTH/_PRO`, `NEXT_PUBLIC_APP_URL` (see `docs/BILLING.md`).
-- **Worker** (`apps/worker/.env`): `DATABASE_URL`, `INTERNAL_WORKER_TOKEN`,
-  `LLM_API_KEY` (blank ⇒ `FakeLLM`), `LLM_MODEL_FAST/MID/VISION`,
-  `DISCORD_BOT_TOKEN`, `DISCORD_WORKER_URL`. Web→worker calls also read
-  `INTERNAL_WORKER_URL` (default `http://localhost:8080`) + `INTERNAL_WORKER_TOKEN`.
+- **Supabase**: create a project, apply `0001`→`0018` in order, load
+  `supabase/seed.sql`. **Enable the Email provider** in Authentication — it is
+  disabled by default in some projects and signup fails with
+  `email_provider_disabled`. Create the `deliverables` bucket (migration `0007`
+  does it). Ensure Vault is available (`0012`).
+- **Web env** (`apps/web/.env.local`): `NEXT_PUBLIC_SUPABASE_URL`,
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`,
+  `INTERNAL_WORKER_TOKEN`, `INTERNAL_WORKER_URL`.
+- **Worker env** (`apps/worker/.env`): `APP_ENV`, `DATABASE_URL`,
+  `INTERNAL_WORKER_TOKEN`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL_FAST/MID/VISION`,
+  `DISCORD_BOT_TOKEN`, `DISCORD_WORKER_URL`.
+- **Per-tenant keys** are entered in Settings → Integrations and stored in Vault:
+  `LLM_API_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY`,
+  `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_SECRET`.
 - **Discord**: enable the Message Content intent; scopes `bot`,
-  `applications.commands`; permissions View Channel, Send Messages, Read Message
-  History, Use Application Commands, Manage Threads. For the OAuth callback set
-  the web env `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` and register the
-  redirect URI `${NEXT_PUBLIC_APP_URL}/api/discord/callback` in the developer
-  portal.
+  `applications.commands`; redirect URI `${NEXT_PUBLIC_APP_URL}/api/discord/callback`.
+- **Production**: `APP_ENV=production` makes the worker refuse to boot with the
+  development token or empty `DATABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`.
 
-## Gotchas / decisions
+## Gotchas
 
-- `pg-boss` was replaced by a plain SQL queue (`jobs` table) because pg-boss is
-  Node-only and the worker is Python. Queue contract: `apps/worker/README.md`.
-- Migrations `0006` **drops and recreates `claim_jobs` with a 3-arg signature**;
-  apply it after `0003` or the worker's RPC call fails.
-- Web server actions are the mutation pattern; `src/lib/data.ts` `withFallback`
-  silently returns mock data in non-production on query errors — it masks broken
-  live queries, watch the `[data] ... failed` console logs.
-- The worker uses the service role and bypasses RLS: every new query must filter
-  by `tenant_id`.
-- Purchasing/`pnpm` note: this repo uses **npm workspaces** (`apps/web`); run
-  commands from the repo root, not `apps/web`.
+- **The worker uses the service role and bypasses RLS.** Every new query must
+  filter `tenant_id` from a trusted source, never from request input.
+- **`withFallback` hides broken queries** in non-production. Watch for
+  `[data] ... failed` in the console; a page that looks fine may be showing mock
+  data.
+- **Migration `0006` replaces the `claim_jobs` signature**; apply it after `0003`.
+- **Migrations are append-only.** Add `0019_*.sql`; never edit an applied file.
+- **npm workspaces**: run commands from the repo root, not `apps/web`.
+- **`npm run worker:dev` uses the system Python**, which lacks the worker
+  dependencies. Use `apps/worker/.venv/Scripts/python.exe -m uvicorn ...`.
+- **LLM quota is the usual cause of `assistant_rate_limited`** — the Gemini free
+  tier allows ~20 requests/day. It is not a code bug.
+- History from earlier sessions (2026-10-19 and before) was removed from this
+  file to keep it accurate. Use `git log` for the detailed record.

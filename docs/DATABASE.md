@@ -7,6 +7,8 @@ PostgreSQL 15 / Supabase. Shared schema, `tenant_id` on every tenant-owned row, 
 | `supabase/migrations/0001_init.sql` | Tables, checks, indexes, `set_updated_at`, reference-code allocator |
 | `supabase/migrations/0002_rls.sql` | `current_tenant_id()`, policies, grants |
 | `supabase/migrations/0003_jobs.sql` | Postgres job queue + RPCs |
+| `supabase/migrations/0004`–`0012` | Tenant provisioning, billing, storage, revisions, follow-ups, reports, outbound/takeover, per-tenant secrets |
+| `supabase/migrations/0013`–`0018` | Notifications, invoices, realtime publication, assistant chat, social portfolio, `app_metadata` claim fallback |
 | `supabase/seed.sql` | Apex UGC Studio demo data (tenant, 3 users, 8 customers, ROB-096…104) |
 
 ## Table map
@@ -46,7 +48,7 @@ PostgreSQL 15 / Supabase. Shared schema, `tenant_id` on every tenant-owned row, 
 
 ## Tenant isolation
 
-- Supabase Auth issues a JWT with a `tenant_id` claim. `public.current_tenant_id()` reads `auth.jwt() ->> 'tenant_id'` and returns NULL if missing/malformed.
+- Supabase Auth issues a JWT with a `tenant_id` claim. `public.current_tenant_id()` reads `auth.jwt() ->> 'tenant_id'` and falls back to `auth.jwt() -> 'app_metadata' ->> 'tenant_id'` (migration `0018`), returning NULL if both are missing or malformed. The fallback exists because `provision_tenant()` writes `raw_app_meta_data`, which Supabase exposes as `app_metadata`; without it a freshly provisioned tenant sees zero rows.
 - RLS is enabled on every table above. Policies compare `tenant_id = (select public.current_tenant_id())` for SELECT/INSERT/UPDATE/DELETE.
 - `tenants`: members read their own row, only `owner` updates it.
 - `users`: members read their team, only `owner`/`manager` update. `current_user_role()` is `SECURITY DEFINER` to avoid RLS recursion.
