@@ -4,6 +4,7 @@ import { AlertTriangle, Home } from "lucide-react";
 
 import { isDemoMode, listProjects } from "@/lib/data";
 import { getBillingSummary } from "@/lib/insights";
+import { getInvoiceSummary, getInvoices } from "@/lib/invoices";
 import { PLANS, getPlan } from "@/lib/plans";
 import { ManageBillingButton } from "@/components/billing/billing-actions";
 import { PlanCard } from "@/components/billing/plan-card";
@@ -30,8 +31,29 @@ function formatUsd(value: number): string {
   });
 }
 
+function formatRobux(value: number | null): string {
+  if (value === null) return "-";
+  return `${value.toLocaleString("en-US")} R$`;
+}
+
+function invoiceStatusTone(status: string): string {
+  switch (status) {
+    case "paid":
+      return "text-status-delivered";
+    case "void":
+      return "text-ink-dim";
+    default:
+      return "text-status-briefing";
+  }
+}
+
 export default async function BillingPage() {
-  const [summary, projects] = await Promise.all([getBillingSummary(), listProjects()]);
+  const [summary, projects, invoices, invoiceSummary] = await Promise.all([
+    getBillingSummary(),
+    listProjects(),
+    getInvoices(),
+    getInvoiceSummary(),
+  ]);
   const plan = getPlan(summary.planId);
   const usedProjects = projects.length;
   const usedCredits = summary.aiCreditsUsed;
@@ -105,7 +127,86 @@ export default async function BillingPage() {
       </section>
 
       <section className="panel p-4">
-        <h2 className="text-headline-sm text-ink">Invoices</h2>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-headline-sm text-ink">Invoices</h2>
+            <p className="mt-1 text-[12px] text-ink-muted">
+              Project invoices generated from the Robux rate.
+            </p>
+          </div>
+          <dl className="flex flex-wrap gap-4 font-mono text-[11px]">
+            <div>
+              <dt className="meta text-[9px]">Outstanding</dt>
+              <dd className="mt-0.5 tabular text-status-briefing">
+                {formatUsd(invoiceSummary.outstandingUsd)} A� {invoiceSummary.outstandingCount}
+              </dd>
+            </div>
+            <div>
+              <dt className="meta text-[9px]">Paid</dt>
+              <dd className="mt-0.5 tabular text-status-delivered">
+                {formatUsd(invoiceSummary.paidUsd)} A� {invoiceSummary.paidCount}
+              </dd>
+            </div>
+          </dl>
+        </div>
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-[12px]">
+            <thead>
+              <tr className="border-b border-line text-left text-ink-dim">
+                <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.06em]">Issued</th>
+                <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.06em]">Number</th>
+                <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.06em]">Robux</th>
+                <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.06em]">Rate</th>
+                <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.06em]">Amount</th>
+                <th className="py-2 font-mono text-[10px] uppercase tracking-[0.06em]">Status</th>
+              </tr>
+            </thead>
+            <tbody className="text-ink-muted">
+              {invoices.length === 0 ? (
+                <tr className="border-b border-line/60">
+                  <td colSpan={6} className="py-4 text-center text-ink-dim">
+                    No invoices yet
+                  </td>
+                </tr>
+              ) : (
+                invoices.slice(0, 12).map((invoice) => (
+                  <tr key={invoice.id} className="border-b border-line/60">
+                    <td className="py-2 pr-4 font-mono text-ink">
+                      {formatDate(invoice.issuedAt) ?? "-"}
+                    </td>
+                    <td className="py-2 pr-4 font-mono text-ink">{invoice.number}</td>
+                    <td className="py-2 pr-4 font-mono tabular">
+                      {formatRobux(invoice.amountRobux)}
+                    </td>
+                    <td className="py-2 pr-4 font-mono tabular">
+                      {invoice.rateRobuxPerUsd === null
+                        ? "-"
+                        : `${invoice.rateRobuxPerUsd.toLocaleString("en-US", {
+                            maximumFractionDigits: 2,
+                          })} R$/USD`}
+                    </td>
+                    <td className="py-2 pr-4 font-mono tabular">
+                      {invoice.amountUsd === null ? "-" : formatUsd(invoice.amountUsd)}
+                    </td>
+                    <td className="py-2">
+                      <span
+                        className={`font-mono text-[10px] uppercase tracking-[0.06em] ${invoiceStatusTone(
+                          invoice.status,
+                        )}`}
+                      >
+                        {invoice.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel p-4">
+        <h2 className="text-headline-sm text-ink">Subscription invoices</h2>
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-[12px]">
             <thead>

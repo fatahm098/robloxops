@@ -137,4 +137,8 @@ def test_secret_keys_match_migration_check_list() -> None:
         "STRIPE_SECRET_KEY",
         "STRIPE_WEBHOOK_SECRET",
         "RESEND_API_KEY",
+        "X_API_KEY",
+        "X_API_SECRET",
+        "X_ACCESS_TOKEN",
+        "X_ACCESS_SECRET",
     )

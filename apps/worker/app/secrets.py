@@ -22,6 +22,10 @@ SECRET_KEYS: tuple[str, ...] = (
     "STRIPE_SECRET_KEY",
     "STRIPE_WEBHOOK_SECRET",
     "RESEND_API_KEY",
+    "X_API_KEY",
+    "X_API_SECRET",
+    "X_ACCESS_TOKEN",
+    "X_ACCESS_SECRET",
 )
 
 GET_SECRET_SQL = "select public.get_tenant_secret($1, $2)"

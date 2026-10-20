@@ -17,6 +17,7 @@ from app.db import json_dict, require_tenant_id
 from app.discord import DiscordSendError, send_message
 from app.handlers import is_ai_paused, log_audit, summarize
 from app.models import sanitize_inbound_text
+from app.notifications import notify_roles
 
 OutboundKind = Literal[
     "deliverable", "brief", "status", "first_message", "followup", "manual"
@@ -114,6 +115,28 @@ async def queue_outbound(
         body,
     )
     return dict(row)
+
+
+def approval_for(kind: str, settings: dict[str, Any] | None) -> str:
+    """Resolve the approval gate for one outbound kind.
+
+    ``settings["approval"]`` is a per-kind map such as
+    ``{"first_message": "preview", "brief": "auto", "deliverable": "human"}``.
+    ``status`` and ``followup`` use their own keys. When the map is absent (or
+    not a dict) the legacy ``settings["approval_mode"]`` applies; both default
+    to ``"auto"``. A map that exists but has no key for ``kind`` also defaults
+    to ``"auto"``.
+    """
+    settings = settings if isinstance(settings, dict) else {}
+    approval = settings.get("approval")
+    if isinstance(approval, dict):
+        value = approval.get(kind)
+        if isinstance(value, str) and value:
+            return value
+        return "auto"
+
+    mode = settings.get("approval_mode")
+    return mode if isinstance(mode, str) and mode else "auto"
 
 
 def default_body(kind: OutboundKind, project: dict[str, Any]) -> str:
@@ -260,7 +283,7 @@ async def send_or_queue(
         )
         return {"status": "skipped", "detail": "ai_paused"}
 
-    approval_mode = json_dict((tenant or {}).get("settings")).get("approval_mode", "auto")
+    approval_mode = approval_for(kind, json_dict((tenant or {}).get("settings")))
     if not force_auto and kind != "manual" and approval_mode in ("preview", "human"):
         row = await queue_outbound(
             db,
@@ -280,6 +303,16 @@ async def send_or_queue(
             entity_id=project_id,
             input_summary=f"outbound_id={row['id']} kind={kind}",
             output_summary="pending",
+        )
+        reference = project.get("reference_code") or project.get("title") or project_id
+        await notify_roles(
+            db,
+            tenant_id,
+            ("owner", "manager"),
+            kind="approval_requested",
+            title=f"Approval needed: {kind}",
+            body=f"{reference} — a {kind} message is awaiting approval.",
+            project_id=project_id,
         )
         return {"status": "pending_approval", "outbound": row}
 

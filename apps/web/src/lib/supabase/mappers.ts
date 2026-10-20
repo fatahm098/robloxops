@@ -32,7 +32,7 @@ export const PROJECT_SELECT = [
   "created_at",
   "discord_thread_id",
   "customers(id,display_name,discord_username,discord_user_id,total_projects)",
-  "users(id,display_name,email,role)",
+  "users!projects_assigned_designer_id_fkey(id,display_name,email,role)",
   "briefs(raw_conversation_summary,structured_data,completeness_score,approved_by_designer)",
   "deliverables(id,version,file_path,file_type,file_size_bytes,is_final,qa_status,qa_report,created_at)",
 ].join(",");

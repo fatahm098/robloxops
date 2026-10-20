@@ -137,6 +137,94 @@ export async function updateSettings(
   }
 }
 
+const APPROVAL_KINDS = [
+  "first_message",
+  "brief",
+  "deliverable",
+  "status",
+  "followup",
+] as const;
+
+type ApprovalKind = (typeof APPROVAL_KINDS)[number];
+type ApprovalMode = "auto" | "preview" | "human";
+
+const APPROVAL_MODES: readonly ApprovalMode[] = ["auto", "preview", "human"];
+
+function isApprovalMode(value: string): value is ApprovalMode {
+  return (APPROVAL_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * Per-action message approval gates stored under `tenants.settings.approval`.
+ * Merges into the existing settings + approval map so unrelated keys survive.
+ */
+export async function updateApprovalSettings(formData: FormData): Promise<SettingsState> {
+  const values = {} as Record<ApprovalKind, ApprovalMode>;
+
+  for (const kind of APPROVAL_KINDS) {
+    const value = String(formData.get(kind) ?? "");
+    if (!isApprovalMode(value)) {
+      return { ok: false, message: `Unknown approval mode for ${kind.replace(/_/g, " ")}.` };
+    }
+    values[kind] = value;
+  }
+
+  if (isDemoMode) {
+    return {
+      ok: true,
+      message: "Saved in demo mode — connect Supabase to persist approval settings.",
+    };
+  }
+
+  try {
+    const context = await requireTenant();
+    if (!context) {
+      return { ok: false, message: "Session expired. Sign in again." };
+    }
+
+    const { supabase, tenantId, userId } = context;
+    const { data: tenant, error: readError } = await supabase
+      .from("tenants")
+      .select("settings")
+      .eq("id", tenantId)
+      .single();
+
+    if (readError) throw readError;
+
+    const existing = asRecord(tenant?.settings);
+    const settings = {
+      ...existing,
+      approval: { ...asRecord(existing.approval), ...values },
+    };
+
+    const { error } = await supabase
+      .from("tenants")
+      .update({ settings })
+      .eq("id", tenantId);
+
+    if (error) throw error;
+
+    const { error: auditError } = await supabase.from("agent_audit_log").insert({
+      tenant_id: tenantId,
+      agent_name: `human:${userId}`,
+      action: "approval_settings_updated",
+      entity_type: "tenant",
+      entity_id: tenantId,
+      input_summary: APPROVAL_KINDS.map((kind) => `${kind}=${values[kind]}`).join(", "),
+      output_summary: "Message approval gates updated",
+      status: "success",
+    });
+
+    if (auditError) console.error("[settings] approval audit failed", auditError);
+
+    revalidatePath("/settings");
+    return { ok: true, message: "Approval settings saved." };
+  } catch (error) {
+    console.error("[settings] approval settings update failed", error);
+    return { ok: false, message: "Could not save approval settings. Try again." };
+  }
+}
+
 const TENANT_TABLES = [
   "deliverables",
   "conversations",
@@ -313,6 +401,49 @@ export async function clearIntegrationSecret(input: {
   } catch (error) {
     console.error("[settings] secret clear failed", keyName, error);
     return { ok: false, message: "Could not clear the key. Try again." };
+  }
+}
+
+/**
+ * Stores the X handle shown next to the portfolio queue. Tokens live in Vault
+ * separately; this is metadata only.
+ */
+export async function saveSocialHandle(handle: string): Promise<SettingsState> {
+  if (isDemoMode) {
+    return { ok: false, message: "Social settings are disabled in demo mode." };
+  }
+
+  const clean = String(handle ?? "")
+    .trim()
+    .replace(/^@+/, "")
+    .slice(0, 60);
+
+  try {
+    const context = await requireTenant();
+    if (!context) {
+      return { ok: false, message: "Session expired. Sign in again." };
+    }
+
+    const { supabase, tenantId } = context;
+    const { error } = await supabase.from("social_accounts").upsert(
+      {
+        tenant_id: tenantId,
+        platform: "x",
+        handle: clean || null,
+        status: clean ? "connected" : "disconnected",
+        connected_at: clean ? new Date().toISOString() : null,
+      },
+      { onConflict: "tenant_id,platform" },
+    );
+
+    if (error) throw error;
+
+    revalidatePath("/settings");
+    revalidatePath("/portfolio");
+    return { ok: true, message: clean ? "Akun X disimpan." : "Akun X dilepas." };
+  } catch (error) {
+    console.error("[settings] social handle save failed", error);
+    return { ok: false, message: "Gagal menyimpan akun X." };
   }
 }
 

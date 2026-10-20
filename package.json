@@ -9,6 +9,8 @@
     "build": "npm --workspace apps/web run build",
     "start": "npm --workspace apps/web run start",
     "typecheck": "npm --workspace apps/web run typecheck",
+    "scan:secrets": "node scripts/scan-secrets.mjs",
+    "scan:secrets:all": "node scripts/scan-secrets.mjs --all",
     "worker:dev": "py -3 -m uvicorn app.main:app --reload --app-dir apps/worker",
     "worker:bot": "py -3 apps/worker/bot.py"
   }

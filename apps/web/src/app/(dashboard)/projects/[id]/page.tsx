@@ -5,9 +5,12 @@ import { BriefPanel } from "@/components/project-detail/brief-panel";
 import { ConversationPanel } from "@/components/project-detail/conversation-panel";
 import { DeliverablesPanel } from "@/components/project-detail/deliverables-panel";
 import { ProjectHeader } from "@/components/project-detail/header";
+import { InvoicePanel } from "@/components/project-detail/invoice-panel";
 import { OutboundApprovals } from "@/components/project-detail/outbound-approvals";
 import { TimelinePanel } from "@/components/project-detail/timeline-panel";
 import { getProjectDetail, isDemoMode } from "@/lib/data";
+import { getInvoices, readRobuxRate } from "@/lib/invoices";
+import { getTenantSettings } from "@/lib/tenant";
 
 export default async function ProjectDetailPage({
   params,
@@ -20,6 +23,12 @@ export default async function ProjectDetailPage({
   if (!project) {
     notFound();
   }
+
+  const [invoices, tenant] = await Promise.all([
+    getInvoices(project.id),
+    getTenantSettings(),
+  ]);
+  const defaultRate = readRobuxRate(tenant.settings);
 
   return (
     <div className="mx-auto w-full max-w-[1600px]">
@@ -70,6 +79,13 @@ export default async function ProjectDetailPage({
 
         <div className="min-w-0 space-y-6">
           <DeliverablesPanel projectId={project.id} deliverables={project.deliverables} />
+          <InvoicePanel
+            projectId={project.id}
+            invoices={invoices}
+            defaultRate={defaultRate}
+            defaultAmountRobux={project.priceRobux}
+            demoMode={isDemoMode}
+          />
           <TimelinePanel timeline={project.timeline} status={project.status} />
         </div>
       </div>

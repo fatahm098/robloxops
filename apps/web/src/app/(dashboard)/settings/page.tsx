@@ -2,11 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Home, Link2, MessageSquare, ShieldAlert } from "lucide-react";
 
+import { ApprovalForm } from "@/components/settings/approval-form";
 import { DeleteWorkspaceButton } from "@/components/settings/delete-workspace-button";
 import { IntegrationsForm } from "@/components/settings/integrations-form";
 import { SettingsForm } from "@/components/settings/settings-form";
 import { isDemoMode } from "@/lib/data";
 import { listSecretStatuses } from "@/lib/secrets";
+import { getSocialAccount } from "@/lib/portfolio";
 import { asRecord } from "@/lib/supabase/mappers";
 import { getTenantSettings } from "@/lib/tenant";
 
@@ -20,10 +22,17 @@ function readModel(settings: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+type ApprovalMode = "auto" | "preview" | "human";
+
+function readApprovalKind(value: unknown, fallback: ApprovalMode): ApprovalMode {
+  return value === "auto" || value === "preview" || value === "human" ? value : fallback;
+}
+
 export default async function SettingsPage() {
-  const [tenant, secretStatuses] = await Promise.all([
+  const [tenant, secretStatuses, socialAccount] = await Promise.all([
     getTenantSettings(),
     listSecretStatuses(),
+    getSocialAccount(),
   ]);
 
   const rawTone = tenant.settings.tone;
@@ -36,8 +45,16 @@ export default async function SettingsPage() {
       ? rawTimezone
       : "UTC";
   const rawApproval = tenant.settings.approval_mode;
-  const approvalMode =
+  const approvalMode: ApprovalMode =
     rawApproval === "preview" || rawApproval === "human" ? rawApproval : "auto";
+  const approvalSettings = asRecord(tenant.settings.approval);
+  const approvalDefaults: Record<string, ApprovalMode> = {
+    first_message: readApprovalKind(approvalSettings.first_message, approvalMode),
+    brief: readApprovalKind(approvalSettings.brief, approvalMode),
+    deliverable: readApprovalKind(approvalSettings.deliverable, approvalMode),
+    status: readApprovalKind(approvalSettings.status, approvalMode),
+    followup: readApprovalKind(approvalSettings.followup, approvalMode),
+  };
   const rawMaxRevisions = tenant.settings.max_revisions;
   const parsedMaxRevisions =
     typeof rawMaxRevisions === "number"
@@ -183,6 +200,12 @@ export default async function SettingsPage() {
         }}
       />
 
+      <ApprovalForm
+        demoMode={isDemoMode}
+        fallbackMode={approvalMode}
+        defaults={approvalDefaults}
+      />
+
       <IntegrationsForm
         demoMode={isDemoMode}
         statuses={secretStatuses}
@@ -191,6 +214,7 @@ export default async function SettingsPage() {
           modelMid: readModel(tenant.settings, "model_mid"),
           modelVision: readModel(tenant.settings, "model_vision"),
         }}
+        socialHandle={socialAccount.handle}
       />
 
       <section className="panel border-danger/40 p-4">

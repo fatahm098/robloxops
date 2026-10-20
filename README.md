@@ -145,11 +145,59 @@ Web (`apps/web/.env.local`):
 | `INTERNAL_WORKER_TOKEN` | shared secret with the worker |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | billing (not wired yet) |
 
-Worker (`apps/worker/.env`): `DATABASE_URL`, `INTERNAL_WORKER_TOKEN`,
+Worker (`apps/worker/.env`): `APP_ENV`, `DATABASE_URL`, `INTERNAL_WORKER_TOKEN`,
 `LLM_API_KEY`, `LLM_MODEL_FAST/MID/VISION`, `DISCORD_BOT_TOKEN`,
 `DISCORD_WORKER_URL`.
 
+Only the `.env.example` templates are tracked. Every real env file is gitignored;
+see [Security](#security) before you add a new variable.
+
+## Security
+
+Full details, threat model and rotation runbook: [`docs/SECURITY.md`](docs/SECURITY.md).
+
+**Nothing secret is committed.** `.gitignore` blocks `.env`, `.env.*`, `*.env`,
+`*.pem`, `*.key` and friends, while `!.env.example` keeps the templates tracked.
+The only key allowed in the browser bundle is the Supabase anon key, because RLS
+is what protects the data.
+
+```bash
+npm run scan:secrets        # tracked files — before every commit
+npm run scan:secrets:all    # + full git history — before every push
+```
+
+The scanner looks for Supabase JWTs, Stripe keys, GitHub/Slack/Discord tokens,
+Google/OpenAI keys, private key blocks and password-bearing Postgres DSNs. It
+exits `1` on a hit, so it can gate CI. History mode catches a key that was
+committed and deleted later — the case `git status` cannot see.
+
+**Tenant isolation.** RLS is enabled on every `public` table, keyed on
+`tenant_id = current_tenant_id()` (JWT claim, falling back to
+`app_metadata.tenant_id`). The service role bypasses RLS, so every worker query
+filters `tenant_id` explicitly and the tenant always comes from the verified
+session — never from a request body or a model response.
+
+**Worker auth.** Every endpoint except `/health` requires a bearer token compared
+with `secrets.compare_digest`. With `APP_ENV=production` the worker refuses to
+boot if `INTERNAL_WORKER_TOKEN` is the development default or shorter than 24
+characters, or if `DATABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` are empty.
+
+**Approval gates.** Customer messages and portfolio posts are queued, not sent.
+A human approves before anything leaves the studio.
+
+**Headers.** `next.config.mjs` sets `X-Content-Type-Options`, `X-Frame-Options`,
+`Referrer-Policy`, `Permissions-Policy`, a framing/plugin CSP, COOP, and HSTS in
+production; `X-Powered-By` is disabled.
+
 ## Features
+
+**Two view modes** (toggle in the topbar, persisted per browser)
+- **Mode Desainer** (default): plain-language, task-first. The sidebar shows only
+  Beranda, Antrian Tugas, Proyek, Upload, and Revisi; ops metrics are hidden. `/`
+  lands on `/today` — a calm "what to do today" list with one clear action per
+  project (revisi, cek QA, upload, dll).
+- **Mode Developer**: the full studio pipeline — CRM, agents, analytics, audit,
+  billing, settings, and the dense operations overview at `/`.
 
 **Dashboard**
 - Overview: AI activity strip, four KPI cards, urgent deliverables table, QA preview
@@ -179,6 +227,10 @@ Worker (`apps/worker/.env`): `DATABASE_URL`, `INTERNAL_WORKER_TOKEN`,
 - Structured LLM output only; validation failures escalate, never write.
 - Inbound text sanitized and capped at 4,000 characters.
 - `settings.ai_paused` is checked before automated actions.
+- Assistant tools are a fixed allowlist with no delete operations; every call is
+  audited as `tool:<name>`.
+- Outbound messages and portfolio posts require human approval before sending.
+- Details: [`docs/SECURITY.md`](docs/SECURITY.md).
 
 ## Design system
 

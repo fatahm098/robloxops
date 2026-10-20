@@ -7,8 +7,10 @@ from typing import Any
 from uuid import UUID
 
 from app.db import json_dict
+from app.email import send_email
 from app.handlers import escalate, is_ai_paused, log_audit, log_inbound
 from app.llm import LLMError, LLMProtocol
+from app.notifications import notify_user
 from app.models import (
     BriefRefreshResult,
     ContinueRequest,
@@ -26,15 +28,62 @@ SELECT id FROM conversations WHERE tenant_id = $1 AND discord_message_id = $2 LI
 """
 
 PROJECT_SQL = """
-SELECT p.id, p.title, p.status, p.project_type, p.human_takeover, b.structured_data
+SELECT p.id, p.title, p.status, p.project_type, p.human_takeover, p.reference_code,
+       p.deadline, p.price_robux, p.price_usd, p.assigned_designer_id, b.structured_data
 FROM projects p
 LEFT JOIN briefs b ON b.project_id = p.id AND b.tenant_id = p.tenant_id
 WHERE p.tenant_id = $1 AND p.id = $2
 """
 
 PROJECT_BY_THREAD_SQL = """
-SELECT id, title, status, human_takeover FROM projects
+SELECT id, title, status, project_type, human_takeover, reference_code,
+       deadline, price_robux, price_usd, assigned_designer_id
+FROM projects
 WHERE tenant_id = $1 AND discord_thread_id = $2
+ORDER BY created_at DESC
+LIMIT 1
+"""
+
+REVISION_INSERT_SQL = """
+INSERT INTO revisions (tenant_id, project_id, requested_by, reason)
+VALUES ($1, $2, $3, $4)
+RETURNING id
+"""
+
+PROJECT_APPROVE_SQL = """
+UPDATE projects
+SET status = 'approved',
+    updated_at = NOW()
+WHERE tenant_id = $1 AND id = $2
+"""
+
+PROJECT_REVISION_SQL = """
+UPDATE projects
+SET status = 'revision',
+    revision_count = revision_count + 1,
+    updated_at = NOW()
+WHERE tenant_id = $1 AND id = $2
+"""
+
+TASKS_BY_PROJECT_SQL = """
+SELECT id, title, status, due_at
+FROM tasks
+WHERE tenant_id = $1 AND project_id = $2
+ORDER BY created_at DESC
+LIMIT 1
+"""
+
+TASK_PROGRESS_SQL = """
+UPDATE tasks
+SET status = 'in_progress',
+    updated_at = NOW()
+WHERE tenant_id = $1 AND project_id = $2
+"""
+
+INVOICE_LATEST_SQL = """
+SELECT number, amount_robux, amount_usd, status
+FROM invoices
+WHERE tenant_id = $1 AND project_id = $2
 ORDER BY created_at DESC
 LIMIT 1
 """
@@ -76,6 +125,11 @@ WHERE NOT EXISTS (
     SELECT 1 FROM tasks WHERE tenant_id = $1 AND project_id = $2
 )
 RETURNING id
+"""
+
+ASSIGNEE_EMAIL_SQL = """
+SELECT email FROM users
+WHERE tenant_id = $1 AND id = $2
 """
 
 
@@ -141,11 +195,69 @@ async def refresh_brief(
     try:
         assigned_to = await pick_designer(db, tenant_id)
         title = (brief.title or str(project["title"] or "")).strip() or "New commission"
-        await ensure_design_task(db, tenant_id, project_id, title, assigned_to)
+        task_id = await ensure_design_task(
+            db, tenant_id, project_id, title, assigned_to
+        )
+        if task_id is not None and assigned_to is not None:
+            await _notify_assignment(
+                db,
+                tenant_id,
+                project_id=project_id,
+                user_id=assigned_to,
+                project_title=str(project["title"] or title),
+                task_title=title,
+            )
     except Exception:
         logger.exception("brief routing failed for project %s", project_id)
 
     return result
+
+
+async def _notify_assignment(
+    db: Any,
+    tenant_id: UUID,
+    *,
+    project_id: UUID,
+    user_id: Any,
+    project_title: str,
+    task_title: str,
+) -> None:
+    """Best-effort in-app + email notification for a freshly assigned task.
+
+    Each step is isolated so a missing email row or unavailable mail provider
+    never prevents the other notification from being written.
+    """
+    try:
+        await notify_user(
+            db,
+            tenant_id,
+            user_id=user_id,
+            kind="task_assigned",
+            title=f"New design task: {task_title}",
+            body=f"You were assigned {project_title}.",
+            project_id=project_id,
+        )
+    except Exception:  # noqa: BLE001 - notification is best-effort
+        logger.exception("task notification failed for project %s", project_id)
+
+    try:
+        email = await db.fetchval(
+            tenant_id, ASSIGNEE_EMAIL_SQL, tenant_id, user_id
+        )
+        if email:
+            await send_email(
+                db,
+                tenant_id,
+                to=str(email),
+                subject=f"New design task: {task_title}",
+                text=(
+                    "You have been assigned a new design task on RobloxOps.\n\n"
+                    f"Project: {project_title}\n"
+                    f"Task: {task_title}\n"
+                ),
+            )
+    except Exception:  # noqa: BLE001 - notification is best-effort
+        logger.exception("task assignment email failed for project %s", project_id)
 
 
 async def handle_continue(db: Any, llm: LLMProtocol, req: ContinueRequest) -> ContinueResult:
@@ -203,21 +315,225 @@ async def handle_continue(db: Any, llm: LLMProtocol, req: ContinueRequest) -> Co
     if project_id is None:
         return ContinueResult(status="no_project")
 
-    # Captured before refresh: refresh_brief may advance the status to revision.
-    status_before = project["status"] if project is not None else None
+    # Captured before refresh: refresh_brief or revision may advance the status.
+    status_before = str(project["status"] or "intake") if project is not None else None
+    ref_code = str(project.get("reference_code") or "your project") if project is not None else "your project"
+    tenant_name = str(tenant["name"])
+    tone = str(json_dict(tenant["settings"]).get("tone", "friendly"))
 
+    # 1. Classify the customer's intent in this ongoing conversation
+    thread_intent = await llm.classify_thread_intent(
+        content,
+        tenant_name=tenant_name,
+        project_status=status_before,
+        context={"project": dict(project) if project is not None else {}},
+    )
+
+    if thread_intent.intent == "status_inquiry":
+        task = None
+        try:
+            task = await db.fetchrow(tenant_id, TASKS_BY_PROJECT_SQL, tenant_id, project_id)
+        except Exception:
+            pass
+        context = {
+            "reference_code": ref_code,
+            "project_status": status_before,
+            "deadline": project.get("deadline") if project else None,
+            "task_status": task.get("status") if task else "in_progress",
+        }
+        try:
+            reply = await llm.draft_message(
+                tenant_name=tenant_name, purpose="status_update", context=context, tone=tone
+            )
+        except LLMError:
+            reply = f"Hi! {ref_code} is currently {status_before}. Our team is working on it and we will update you soon!"
+
+        await log_audit(
+            db,
+            tenant_id,
+            agent_name="communication_agent",
+            action="status_inquiry_replied",
+            status="success",
+            entity_type="project",
+            entity_id=project_id,
+            input_summary=content[:200],
+            output_summary=reply[:200],
+        )
+        return ContinueResult(
+            status="processed",
+            project_id=project_id,
+            reply=reply,
+            intent="status_inquiry",
+        )
+
+    if thread_intent.intent == "approval":
+        try:
+            await db.execute(tenant_id, PROJECT_APPROVE_SQL, tenant_id, project_id)
+        except Exception as exc:
+            logger.warning("failed to update project status to approved: %s", exc)
+
+        context = {"reference_code": ref_code}
+        try:
+            reply = await llm.draft_message(
+                tenant_name=tenant_name, purpose="approval_confirmed", context=context, tone=tone
+            )
+        except LLMError:
+            reply = f"Awesome! Thank you for approving {ref_code}. We are finalizing the delivery package for you now."
+
+        await log_audit(
+            db,
+            tenant_id,
+            agent_name="project_manager",
+            action="project_approved",
+            status="success",
+            entity_type="project",
+            entity_id=project_id,
+            input_summary=content[:200],
+            output_summary=reply[:200],
+        )
+
+        designer_id = project.get("assigned_designer_id") if project else None
+        if designer_id:
+            try:
+                await notify_user(
+                    db,
+                    tenant_id,
+                    user_id=designer_id,
+                    kind="project_approved",
+                    title=f"Project approved: {ref_code}",
+                    body="The customer has approved the design preview.",
+                    project_id=project_id,
+                )
+            except Exception:
+                pass
+
+        return ContinueResult(
+            status="processed",
+            project_id=project_id,
+            reply=reply,
+            intent="approval",
+        )
+
+    if thread_intent.intent == "revision_request":
+        reason = thread_intent.details or content
+        try:
+            await db.fetchrow(
+                tenant_id,
+                REVISION_INSERT_SQL,
+                tenant_id,
+                project_id,
+                req.author_name or "customer",
+                reason[:500],
+            )
+            await db.execute(tenant_id, PROJECT_REVISION_SQL, tenant_id, project_id)
+            await db.execute(tenant_id, TASK_PROGRESS_SQL, tenant_id, project_id)
+        except Exception as exc:
+            logger.warning("revision recording failed: %s", exc)
+
+        context = {"reference_code": ref_code, "reason": reason}
+        try:
+            reply = await llm.draft_message(
+                tenant_name=tenant_name, purpose="revision", context=context, tone=tone
+            )
+        except LLMError:
+            reply = f"Thanks for the revision notes on {ref_code} — I've passed them to the designer."
+
+        await log_audit(
+            db,
+            tenant_id,
+            agent_name="project_manager",
+            action="revision_created",
+            status="success",
+            entity_type="project",
+            entity_id=project_id,
+            input_summary=content[:200],
+            output_summary=reply[:200],
+        )
+
+        designer_id = project.get("assigned_designer_id") if project else None
+        if designer_id:
+            try:
+                await notify_user(
+                    db,
+                    tenant_id,
+                    user_id=designer_id,
+                    kind="revision_requested",
+                    title=f"Revision requested: {ref_code}",
+                    body=reason[:200],
+                    project_id=project_id,
+                )
+            except Exception:
+                pass
+
+        return ContinueResult(
+            status="processed",
+            project_id=project_id,
+            reply=reply,
+            intent="revision_request",
+        )
+
+    if thread_intent.intent == "payment_inquiry":
+        settings_dict = json_dict(tenant["settings"])
+        instructions = (
+            settings_dict.get("payment_instructions")
+            or settings_dict.get("robux_instructions")
+            or "You can pay via our Roblox Group Funds or Gamepass link."
+        )
+        invoice = None
+        try:
+            invoice = await db.fetchrow(tenant_id, INVOICE_LATEST_SQL, tenant_id, project_id)
+        except Exception:
+            pass
+
+        price_robux = project.get("price_robux") if project else None
+        price_usd = project.get("price_usd") if project else None
+        if invoice:
+            price_robux = price_robux or invoice.get("amount_robux")
+            price_usd = price_usd or invoice.get("amount_usd")
+
+        context = {
+            "reference_code": ref_code,
+            "amount_robux": price_robux,
+            "amount_usd": price_usd,
+            "payment_instructions": instructions,
+        }
+        try:
+            reply = await llm.draft_message(
+                tenant_name=tenant_name, purpose="payment_info", context=context, tone=tone
+            )
+        except LLMError:
+            reply = f"Payment details for {ref_code}: {instructions}"
+
+        await log_audit(
+            db,
+            tenant_id,
+            agent_name="communication_agent",
+            action="payment_inquiry_replied",
+            status="success",
+            entity_type="project",
+            entity_id=project_id,
+            input_summary=content[:200],
+            output_summary=reply[:200],
+        )
+        return ContinueResult(
+            status="processed",
+            project_id=project_id,
+            reply=reply,
+            intent="payment_inquiry",
+        )
+
+    # Otherwise default to brief extraction / refresh
     refreshed = await refresh_brief(db, llm, tenant_id, project_id)
     if refreshed is None:
         return ContinueResult(status="escalated", project_id=project_id)
 
-    tone = str(json_dict(tenant["settings"]).get("tone", "friendly"))
-    context: dict[str, Any] = {"missing_fields": refreshed.missing_fields}
+    context = {"missing_fields": refreshed.missing_fields, "reference_code": ref_code}
     purpose = "clarification" if refreshed.missing_fields else "brief_updated"
     if status_before in ("customer_review", "delivered", "approved"):
         purpose = "revision"
     try:
         reply = await llm.draft_message(
-            tenant_name=str(tenant["name"]), purpose=purpose, context=context, tone=tone
+            tenant_name=tenant_name, purpose=purpose, context=context, tone=tone
         )
     except LLMError:
         reply = "Thanks — I've updated your brief."
@@ -227,4 +543,5 @@ async def handle_continue(db: Any, llm: LLMProtocol, req: ContinueRequest) -> Co
         project_id=project_id,
         reply=reply,
         missing_fields=refreshed.missing_fields,
+        intent="brief_update",
     )

@@ -1,6 +1,9 @@
 "use client";
 
 import { createBrowserClient } from "@supabase/ssr";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+export type SupabaseBrowserClient = SupabaseClient;
 
 /**
  * Browser Supabase client. Safe to call from Client Components.
@@ -16,4 +19,24 @@ export function createClient() {
   }
 
   return createBrowserClient(url, anonKey);
+}
+
+let browserClient: SupabaseBrowserClient | null = null;
+
+export function isBrowserSupabaseConfigured(): boolean {
+  return Boolean(
+    process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  );
+}
+
+/**
+ * Returns a singleton browser client, or `null` in demo mode (no Supabase env).
+ * Realtime callers use the null to skip subscriptions instead of crashing.
+ */
+export function getBrowserClient(): SupabaseBrowserClient | null {
+  if (!isBrowserSupabaseConfigured()) return null;
+  if (!browserClient) {
+    browserClient = createClient();
+  }
+  return browserClient;
 }

@@ -1,17 +1,53 @@
+# --- Secrets -------------------------------------------------------------
+# Every real env file is ignored. Only the example templates are tracked.
+.env
+.env.*
+*.env
+!.env.example
+!.env.example.*
+!.env.local.example
+*.pem
+*.p8
+*.p12
+*.key
+*.keystore
+secrets/
+.secrets/
+
+# --- Node ----------------------------------------------------------------
 node_modules/
+.pnp
+.pnp.*
+.npm/
+.yarn/
+pnpm-store/
+.turbo/
 .next/
 out/
 dist/
 build/
-.env
-.env.local
-.env*.local
-*.log
+*.tsbuildinfo
+next-env.d.ts.bak
+
+# --- Python --------------------------------------------------------------
 __pycache__/
+*.py[cod]
+*.egg-info/
 .venv/
 venv/
-*.pyc
 .pytest_cache/
-.DS_Store
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Tooling / OS --------------------------------------------------------
 .vercel
 coverage/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

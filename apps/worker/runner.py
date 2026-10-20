@@ -26,12 +26,13 @@ from app.handlers.brief import handle_continue
 from app.handlers.intake import handle_intake
 from app.handlers.qa import run_qa
 from app.llm import LLMError, build_llm_for_tenant, get_llm
-from app.models import ContinueRequest, IntakeRequest
+from app.models import ContinueRequest, IntakeRequest, PortfolioDraftRequest
 from app.queue import Job, claim_jobs, complete_job, fail_job, reap_stale_jobs
+from app.social import draft_for_project
 
 logger = logging.getLogger("robloxops.runner")
 
-HANDLED_KINDS = {"intake", "conversation_continue", "qa_check"}
+HANDLED_KINDS = {"intake", "conversation_continue", "qa_check", "portfolio_draft"}
 REAP_EVERY_ITERATIONS = 30
 FOLLOWUP_SWEEP_SECONDS = 900
 
@@ -73,6 +74,15 @@ async def dispatch(db: Database, llm: Any, job: Job) -> bool:
         ):
             return True
         await run_qa(db, tenant_llm, UUID(str(job.tenant_id)), deliverable_id)
+    elif job.kind == "portfolio_draft":
+        request = PortfolioDraftRequest(**payload)
+        await draft_for_project(
+            db,
+            tenant_llm,
+            request.tenant_id,
+            request.project_id,
+            media_urls=[item.model_dump() for item in request.media],
+        )
     else:
         logger.warning("unsupported job kind %r for job %s", job.kind, job.id)
         await fail_job(db.pool, job.id, f"unsupported job kind: {job.kind}")

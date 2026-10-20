@@ -1,9 +1,11 @@
+import Link from "next/link";
 import {
   Box,
   CheckCircle2,
   Download,
   Image as ImageIcon,
   ShieldCheck,
+  Upload,
   XCircle,
 } from "lucide-react";
 
@@ -137,7 +139,16 @@ export function DeliverablesPanel({
           </div>
         </>
       ) : (
-        <p className="p-4 text-body-md text-ink-dim">No deliverables uploaded yet.</p>
+        <div className="p-6 text-center">
+          <p className="text-body-md text-ink-dim">No deliverables uploaded yet.</p>
+          <Link
+            href="/deliverables#upload-panel"
+            className="mt-3 inline-flex h-9 items-center gap-2 rounded bg-brand px-3 text-[12px] font-semibold text-canvas transition-colors hover:bg-brand-bright"
+          >
+            <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+            Upload Deliverable Now
+          </Link>
+        </div>
       )}
 
       {previews.length > 0 ? (

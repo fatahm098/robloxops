@@ -17,8 +17,9 @@ export async function GET() {
   url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", "bot identify guilds");
-  // Base permissions for thread + message + history access; tune per deployment.
-  url.searchParams.set("permissions", "3435973888");
+  // View channels, send messages, embed/attach, read history, reactions,
+  // manage/create public threads, send messages in threads.
+  url.searchParams.set("permissions", "326417632320");
 
   return NextResponse.redirect(url.toString());
 }

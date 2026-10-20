@@ -206,6 +206,27 @@ def _handler_worker(db: Any, llm: Any) -> Any:
     return call
 
 
+def _worker_with_notify(
+    *,
+    intake: dict[str, Any] | None = None,
+    cont: dict[str, Any] | None = None,
+    notify: dict[str, Any] | None = None,
+) -> tuple[Any, list[tuple[str, dict[str, Any]]]]:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        calls.append((path, payload))
+        if path == "/intake":
+            return intake
+        if path == "/conversation/continue":
+            return cont
+        if path == "/notify":
+            return notify
+        raise AssertionError(f"unexpected worker path: {path}")
+
+    return call, calls
+
+
 def _paused_tenant(tenant_id: Any) -> ChannelTenant:
     return ChannelTenant(
         tenant_id,
@@ -268,30 +289,72 @@ async def test_paused_tenant_thread_message_records_escalation_and_never_replies
     assert db.audits[-1]["status"] == "escalated"
 
 
-@pytest.mark.asyncio
-async def test_unpaused_tenant_message_opens_thread_with_confirmation(
+def _unpaused_bot(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+) -> tuple[RobloxOpsBot, ChannelTenant, FakeRepo]:
     monkeypatch.setattr(discord, "TextChannel", FakeTextChannel)
     monkeypatch.setattr(discord, "Thread", FakeThreadChannel)
-
-    tenant_id = uuid4()
     tenant = ChannelTenant(
-        tenant_id, "Pixel Forge", {"monitored_channel_ids": ["chan-1"]}
+        uuid4(), "Pixel Forge", {"monitored_channel_ids": ["chan-1"]}
     )
     repo = FakeRepo(tenant, {"chan-1"})
-    bot = RobloxOpsBot(Settings(), repo)  # type: ignore[arg-type]
+    return RobloxOpsBot(Settings(), repo), tenant, repo  # type: ignore[arg-type]
 
-    async def fake_worker(path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return {
+
+@pytest.mark.asyncio
+async def test_intake_notifies_instead_of_sending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot, tenant, repo = _unpaused_bot(monkeypatch)
+    project_id = uuid4()
+    call, calls = _worker_with_notify(
+        intake={
+            "status": "created",
+            "intent": "commission_request",
+            "reply": "Thanks! Reference ROB-1.",
+            "reference_code": "ROB-1",
+            "project_id": str(project_id),
+        },
+        notify={"status": "sent"},
+    )
+    bot._call_worker = call  # type: ignore[method-assign]
+
+    channel = FakeTextChannel("chan-1")
+    message = FakeMessage(channel, content="I want to commission a hoodie", mid="msg-3")
+
+    await bot.on_message(message)  # type: ignore[arg-type]
+
+    assert message.created_thread is not None
+    assert repo.linked == ["thread-99"]
+    assert message.created_thread.sent == []
+    assert channel.sent == []
+    notify_calls = [payload for path, payload in calls if path == "/notify"]
+    assert notify_calls == [
+        {
+            "tenant_id": str(tenant.tenant_id),
+            "project_id": str(project_id),
+            "kind": "first_message",
+            "message": "Thanks! Reference ROB-1.",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_intake_falls_back_to_direct_send_when_notify_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot, _tenant, _repo = _unpaused_bot(monkeypatch)
+    call, calls = _worker_with_notify(
+        intake={
             "status": "created",
             "intent": "commission_request",
             "reply": "Thanks! Reference ROB-1.",
             "reference_code": "ROB-1",
             "project_id": str(uuid4()),
-        }
-
-    bot._call_worker = fake_worker  # type: ignore[method-assign]
+        },
+        notify=None,
+    )
+    bot._call_worker = call  # type: ignore[method-assign]
 
     channel = FakeTextChannel("chan-1")
     message = FakeMessage(channel, content="I want to commission a hoodie", mid="msg-3")
@@ -301,6 +364,58 @@ async def test_unpaused_tenant_message_opens_thread_with_confirmation(
     assert message.created_thread is not None
     assert message.created_thread.sent == ["Thanks! Reference ROB-1."]
     assert channel.sent == []
+    assert any(path == "/notify" for path, _payload in calls)
+
+
+@pytest.mark.asyncio
+async def test_conversation_continue_notifies_instead_of_sending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot, tenant, _repo = _unpaused_bot(monkeypatch)
+    project_id = uuid4()
+    reply = "Update on ROB-1 — status is now in progress."
+    call, calls = _worker_with_notify(
+        cont={"status": "ok", "reply": reply, "project_id": str(project_id)},
+        notify={"status": "pending_approval"},
+    )
+    bot._call_worker = call  # type: ignore[method-assign]
+
+    thread = FakeThreadChannel("thread-1", "chan-1")
+    message = FakeMessage(thread, content="Here is an update", mid="msg-4")
+
+    await bot.on_message(message)  # type: ignore[arg-type]
+
+    assert thread.sent == []
+    notify_calls = [payload for path, payload in calls if path == "/notify"]
+    assert notify_calls == [
+        {
+            "tenant_id": str(tenant.tenant_id),
+            "project_id": str(project_id),
+            "kind": "status",
+            "message": reply,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_conversation_continue_falls_back_to_direct_send_when_notify_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot, _tenant, _repo = _unpaused_bot(monkeypatch)
+    reply = "Update on ROB-1 — status is now in progress."
+    call, calls = _worker_with_notify(
+        cont={"status": "ok", "reply": reply, "project_id": str(uuid4())},
+        notify=None,
+    )
+    bot._call_worker = call  # type: ignore[method-assign]
+
+    thread = FakeThreadChannel("thread-1", "chan-1")
+    message = FakeMessage(thread, content="Here is an update", mid="msg-4")
+
+    await bot.on_message(message)  # type: ignore[arg-type]
+
+    assert thread.sent == [reply]
+    assert any(path == "/notify" for path, _payload in calls)
 
 
 # --------------------------------------------------------------------------- #

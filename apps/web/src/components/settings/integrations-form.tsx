@@ -7,6 +7,7 @@ import {
   clearIntegrationSecret,
   saveIntegrationSecret,
   saveLlmModels,
+  saveSocialHandle,
   type SettingsState,
 } from "@/app/(dashboard)/settings/actions";
 import type { SecretKey, SecretStatus } from "@/lib/secrets";
@@ -20,6 +21,7 @@ interface IntegrationsFormProps {
     modelVision: string;
   };
   demoMode: boolean;
+  socialHandle?: string | null;
 }
 
 interface SecretField {
@@ -60,6 +62,30 @@ const SECRET_FIELDS: SecretField[] = [
     hint: "Transactional email for customer and designer notifications.",
     placeholder: "re_…",
   },
+  {
+    keyName: "X_API_KEY",
+    label: "X API key",
+    hint: "Consumer key of your X app (OAuth 1.0a user context).",
+    placeholder: "consumer key",
+  },
+  {
+    keyName: "X_API_SECRET",
+    label: "X API secret",
+    hint: "Consumer secret. Needs tweet.write + media.write scopes.",
+    placeholder: "consumer secret",
+  },
+  {
+    keyName: "X_ACCESS_TOKEN",
+    label: "X access token",
+    hint: "Access token of the account that will post the portfolio.",
+    placeholder: "access token",
+  },
+  {
+    keyName: "X_ACCESS_SECRET",
+    label: "X access secret",
+    hint: "Access token secret. Stored in Vault, never shown again.",
+    placeholder: "access token secret",
+  },
 ];
 
 function formatUpdated(value: string | null): string | null {
@@ -75,7 +101,7 @@ function statusLabel(status: SecretStatus | undefined): string {
   return updated ? `Updated ${updated}` : "Saved";
 }
 
-export function IntegrationsForm({ statuses, models, demoMode }: IntegrationsFormProps) {
+export function IntegrationsForm({ statuses, models, demoMode, socialHandle }: IntegrationsFormProps) {
   return (
     <section className="panel p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -106,7 +132,76 @@ export function IntegrationsForm({ statuses, models, demoMode }: IntegrationsFor
       </div>
 
       <LlmModelsForm models={models} demoMode={demoMode} />
+      <SocialHandleForm handle={socialHandle ?? ""} demoMode={demoMode} />
     </section>
+  );
+}
+
+function SocialHandleForm({ handle, demoMode }: { handle: string; demoMode: boolean }) {
+  const [value, setValue] = useState(handle);
+  const [pending, setPending] = useState(false);
+  const [state, setState] = useState<SettingsState | null>(null);
+
+  async function onSave() {
+    setPending(true);
+    setState(null);
+    try {
+      const result = await saveSocialHandle(value);
+      setState(result);
+    } catch {
+      setState({ ok: false, message: "Gagal menyimpan akun X." });
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded border border-line bg-canvas p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="meta">Akun X untuk portofolio</span>
+        <span className="font-mono text-[9px] uppercase tracking-[0.06em] text-ink-dim">
+          social_accounts
+        </span>
+      </div>
+      <p className="mt-1 text-[11px] text-ink-muted">
+        Handle yang tampil di antrean portofolio. Token di atas yang dipakai saat publish.
+      </p>
+      <div className="mt-2 flex items-center gap-2">
+        <input
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder="@studiokamu"
+          autoComplete="off"
+          spellCheck={false}
+          disabled={demoMode || pending}
+          className="h-9 w-full max-w-[260px] rounded border border-line-strong bg-surface-1 px-3 font-mono text-[13px] text-ink placeholder:text-ink-dim focus:border-brand focus:outline-none disabled:opacity-60"
+        />
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={demoMode || pending}
+          className="inline-flex h-9 items-center gap-1.5 rounded bg-brand px-3 text-[12px] font-semibold text-canvas transition-colors hover:bg-brand-bright disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {pending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Save className="h-3.5 w-3.5" />
+          )}
+          Simpan
+        </button>
+      </div>
+      {state?.message ? (
+        <p
+          role="status"
+          className={cn(
+            "mt-1 font-mono text-[10px] uppercase tracking-[0.06em]",
+            state.ok ? "text-status-delivered" : "text-danger-bright",
+          )}
+        >
+          {state.message}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

@@ -168,6 +168,18 @@ class RevisionCreateRequest(BaseModel):
     reason: str
 
 
+class InvoiceCreateRequest(BaseModel):
+    tenant_id: UUID
+    project_id: UUID
+    rate_robux_per_usd: float = Field(gt=0)
+    amount_robux: int | None = None
+
+
+class InvoicePaidRequest(BaseModel):
+    tenant_id: UUID
+    invoice_id: UUID
+
+
 class IntakeResult(BaseModel):
     status: Literal["created", "duplicate", "ignored", "escalated"]
     intent: IntentLabel
@@ -177,11 +189,31 @@ class IntakeResult(BaseModel):
     reply: str = ""
 
 
+ThreadIntentLabel = Literal[
+    "brief_update",
+    "status_inquiry",
+    "approval",
+    "revision_request",
+    "payment_inquiry",
+    "general",
+]
+
+
+class ThreadIntentResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    intent: ThreadIntentLabel = "brief_update"
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    reasoning: str = Field(default="", max_length=500)
+    details: str = Field(default="", max_length=1000)
+
+
 class ContinueResult(BaseModel):
     status: Literal["processed", "duplicate", "no_project", "escalated", "human_takeover"]
     project_id: UUID | None = None
     reply: str = ""
     missing_fields: list[str] = Field(default_factory=list)
+    intent: ThreadIntentLabel | None = None
 
 
 class BriefRefreshResult(BaseModel):
@@ -239,3 +271,83 @@ class ConversationReplyRequest(BaseModel):
     project_id: UUID
     content: str = Field(min_length=1, max_length=4000)
     author: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Assistant (in-web chat)
+# --------------------------------------------------------------------------- #
+
+
+class AssistantChatRequest(BaseModel):
+    tenant_id: UUID
+    user_id: UUID | None = None
+    message: str = Field(min_length=1, max_length=2000)
+    thread_id: UUID | None = None
+
+
+class ToolCallSummary(BaseModel):
+    """Compact trace of one tool invocation, shown in the developer view."""
+
+    name: str
+    ok: bool = True
+    summary: str = Field(default="", max_length=300)
+
+
+class AssistantReply(BaseModel):
+    thread_id: UUID | None = None
+    reply: str = ""
+    tool_calls: list[ToolCallSummary] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Portfolio / social publishing
+# --------------------------------------------------------------------------- #
+
+
+class PortfolioMedia(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+    url: str = Field(min_length=1, max_length=2000)
+
+
+class PortfolioCaption(BaseModel):
+    """LLM output for one portfolio post. Kept short: X counts characters."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    caption: str = Field(min_length=1, max_length=400)
+
+
+class PortfolioDraftRequest(BaseModel):
+    tenant_id: UUID
+    project_id: UUID
+    media: list[PortfolioMedia] = Field(default_factory=list, max_length=4)
+
+
+class PortfolioDraftResult(BaseModel):
+    status: Literal["drafted", "duplicate", "skipped", "failed"]
+    post_id: UUID | None = None
+    caption: str = ""
+    detail: str = ""
+
+
+class PortfolioPublishRequest(BaseModel):
+    tenant_id: UUID
+    post_id: UUID
+
+
+class PortfolioPublishResult(BaseModel):
+    status: Literal["published", "failed", "skipped"]
+    external_id: str | None = None
+    external_url: str | None = None
+    error: str | None = None
+
+
+class PortfolioRejectRequest(BaseModel):
+    tenant_id: UUID
+    post_id: UUID
+    reason: str = Field(default="", max_length=500)
+
+
+class PortfolioRejectResult(BaseModel):
+    status: Literal["rejected", "skipped"]
+    detail: str = ""

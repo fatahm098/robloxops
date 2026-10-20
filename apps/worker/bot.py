@@ -164,8 +164,15 @@ class RobloxOpsBot(discord.Client):
 
     async def on_ready(self) -> None:
         logger.info("logged in as %s (guilds=%d)", self.user, len(self.guilds))
+        for guild in self.guilds:
+            logger.info("guild: %s (%s)", guild.name, guild.id)
         try:
-            await self.tree.sync()
+            # Guild-scoped commands appear immediately, unlike global commands
+            # which can take a while to propagate through Discord's cache.
+            for guild in self.guilds:
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+            logger.info("slash commands synced to %d guild(s)", len(self.guilds))
         except discord.HTTPException as exc:
             logger.warning("slash command sync failed: %s", exc)
 
@@ -215,25 +222,57 @@ class RobloxOpsBot(discord.Client):
             return
 
         if kind == "intake" and result.get("status") == "created" and result.get("intent") == "commission_request":
-            await self._open_thread(message, tenant, result)
+            reply = result.get("reply") or f"Thanks! Reference {result.get('reference_code', '')}."
+            thread = await self._open_thread(message, tenant, result)
+            notified = None
+            if thread is not None and result.get("project_id") is not None:
+                notified = await self._notify(
+                    tenant, result["project_id"], "first_message", reply
+                )
+            if notified is None:
+                target = thread if thread is not None else message.channel
+                await target.send(reply)
         elif kind == "conversation_continue" and result.get("reply"):
-            await message.channel.send(result["reply"])
+            reply = result["reply"]
+            notified = None
+            if result.get("project_id") is not None:
+                notified = await self._notify(
+                    tenant, result["project_id"], "status", reply
+                )
+            if notified is None:
+                await message.channel.send(reply)
 
     async def _open_thread(
         self, message: discord.Message, tenant: ChannelTenant, result: dict[str, Any]
-    ) -> None:
-        reply = result.get("reply") or f"Thanks! Reference {result.get('reference_code', '')}."
+    ) -> Any | None:
         reference = result.get("reference_code") or "Commission"
         try:
             thread = await message.create_thread(
                 name=f"{reference} · {message.author.display_name}"[:MAX_THREAD_NAME],
                 auto_archive_duration=THREAD_ARCHIVE_MINUTES,
             )
-            await thread.send(reply)
             await self.repo.link_thread(tenant.tenant_id, result["project_id"], str(thread.id))
+            return thread
         except (discord.HTTPException, KeyError) as exc:
             logger.warning("thread creation failed, replying in channel: %s", exc)
-            await message.channel.send(reply)
+            return None
+
+    async def _notify(
+        self,
+        tenant: ChannelTenant,
+        project_id: Any,
+        kind: str,
+        message_text: str,
+    ) -> dict[str, Any] | None:
+        return await self._call_worker(
+            "/notify",
+            {
+                "tenant_id": str(tenant.tenant_id),
+                "project_id": str(project_id),
+                "kind": kind,
+                "message": message_text,
+            },
+        )
 
     async def _call_worker(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         url = f"{self.settings.discord_worker_url.rstrip('/')}{path}"

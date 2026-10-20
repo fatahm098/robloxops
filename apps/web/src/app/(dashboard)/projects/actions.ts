@@ -4,6 +4,11 @@ import { revalidatePath } from "next/cache";
 
 import { isDemoMode } from "@/lib/data";
 import { getProjectReport, type ReportKind } from "@/lib/insights";
+import {
+  createInvoiceForProject,
+  markInvoicePaid,
+  type Invoice,
+} from "@/lib/invoices";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { PROJECT_STATUSES } from "@/lib/supabase/mappers";
 import { createClient, getAuthSession } from "@/lib/supabase/server";
@@ -68,6 +73,56 @@ async function requestProjectReport(tenantId: string, projectId: string): Promis
     }
   } catch (error) {
     console.error("[projects] report generation failed", error);
+  }
+}
+
+/**
+ * Ask the worker to draft a portfolio post for a finished commission.
+ * Best-effort: publishing is a review queue, so a failure here only means the
+ * designer has to create the post manually later.
+ */
+async function requestPortfolioDraft(tenantId: string, projectId: string): Promise<void> {
+  const token = process.env.INTERNAL_WORKER_TOKEN;
+  if (!token) {
+    console.error("[projects] INTERNAL_WORKER_TOKEN is not configured — portfolio draft skipped");
+    return;
+  }
+
+  try {
+    const admin = createAdminClient();
+    const { data: files, error } = await admin
+      .from("deliverables")
+      .select("file_path, file_type")
+      .eq("tenant_id", tenantId)
+      .eq("project_id", projectId)
+      .order("version", { ascending: false })
+      .limit(4);
+    if (error) throw error;
+
+    const media: { path: string; url: string }[] = [];
+    for (const file of files ?? []) {
+      const path = typeof file.file_path === "string" ? file.file_path : "";
+      if (!path) continue;
+      const type = typeof file.file_type === "string" ? file.file_type.toLowerCase() : "";
+      if (type && !type.startsWith("image/")) continue;
+      const { data: signed } = await admin.storage.from("deliverables").createSignedUrl(path, 3600);
+      if (signed?.signedUrl) media.push({ path, url: signed.signedUrl });
+    }
+
+    const response = await fetch(`${WORKER_URL}/portfolio/draft`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ tenant_id: tenantId, project_id: projectId, media }),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      console.error("[projects] portfolio draft failed", response.status);
+    }
+  } catch (error) {
+    console.error("[projects] portfolio draft failed", error);
   }
 }
 
@@ -336,8 +391,14 @@ export async function updateProjectStatus(
       await requestProjectReport(auth.tenantId, projectId);
     }
 
+    // Finished commissions become portfolio drafts, waiting for a human click.
+    if (status === "delivered" || status === "approved") {
+      await requestPortfolioDraft(auth.tenantId, projectId);
+    }
+
     revalidatePath("/projects");
     revalidatePath(`/projects/${projectId}`);
+    revalidatePath("/portfolio");
     revalidatePath("/");
     return { ok: true, message: `Status set to ${status}.` };
   } catch (error) {
@@ -651,6 +712,87 @@ export async function setHumanTakeover(
 }
 
 /** Reads the persisted report markdown for a project (tenant-scoped). */
+export interface ProjectInvoiceResult {
+  ok: boolean;
+  message: string;
+  invoice?: Invoice;
+}
+
+/**
+ * Generates the project's draft invoice via the worker. The rate comes from the
+ * form; the tenant id is taken from the verified session inside the lib.
+ */
+export async function createProjectInvoice(
+  projectId: string,
+  formData: FormData,
+): Promise<ProjectInvoiceResult> {
+  if (isDemoMode) {
+    return { ok: false, message: "Demo mode - connect the worker to create invoices." };
+  }
+  if (!projectId) return { ok: false, message: "Missing project." };
+
+  const rate = Number(formData.get("rate_robux_per_usd") ?? formData.get("rate"));
+  if (!Number.isFinite(rate) || rate <= 0) {
+    return { ok: false, message: "Robux rate must be greater than zero." };
+  }
+
+  const rawAmount = formData.get("amount_robux");
+  let amountRobux: number | undefined;
+  if (rawAmount !== null && String(rawAmount).trim() !== "") {
+    const parsed = Number(rawAmount);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      return { ok: false, message: "Robux amount must be a positive whole number." };
+    }
+    amountRobux = parsed;
+  }
+
+  try {
+    const result = await createInvoiceForProject(projectId, {
+      rateRobuxPerUsd: rate,
+      amountRobux,
+    });
+
+    if (result.ok) {
+      revalidatePath(`/projects/${projectId}`);
+      revalidatePath("/projects");
+      revalidatePath("/billing");
+    }
+
+    return result;
+  } catch (error) {
+    console.error("[projects.createProjectInvoice] failed", error);
+    return { ok: false, message: "Could not create the invoice. Try again." };
+  }
+}
+
+/** Marks a project invoice paid via the worker and refreshes both surfaces. */
+export async function markProjectInvoicePaid(
+  invoiceId: string,
+  projectId: string,
+): Promise<ProjectInvoiceResult> {
+  if (isDemoMode) {
+    return { ok: false, message: "Demo mode - connect the worker to mark invoices paid." };
+  }
+  if (!invoiceId) return { ok: false, message: "Missing invoice." };
+
+  try {
+    const result = await markInvoicePaid(invoiceId);
+
+    if (result.ok) {
+      if (projectId) {
+        revalidatePath(`/projects/${projectId}`);
+        revalidatePath("/projects");
+      }
+      revalidatePath("/billing");
+    }
+
+    return result;
+  } catch (error) {
+    console.error("[projects.markProjectInvoicePaid] failed", error);
+    return { ok: false, message: "Could not mark the invoice paid. Try again." };
+  }
+}
+
 export async function fetchProjectReport(
   projectId: string,
   kind: ReportKind = "delivery",

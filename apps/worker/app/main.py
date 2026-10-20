@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
 
 from app.config import get_settings
+from app.assistant import chat as assistant_turn
 from app.db import Database, json_dict
 from app.followups import run_followup
 from app.handlers import log_audit
@@ -18,6 +19,7 @@ from app.handlers.brief import handle_continue
 from app.handlers.intake import handle_intake
 from app.handlers.qa import run_qa
 from app.handlers.revision import create_revision
+from app.invoices import create_invoice, mark_invoice_paid
 from app.llm import LLMError, build_llm_for_tenant, get_llm
 from app.outbound import (
     approve_outbound,
@@ -26,7 +28,10 @@ from app.outbound import (
     send_or_queue,
 )
 from app.reports import persist_report
+from app.social import draft_for_project, publish as publish_portfolio, reject as reject_portfolio
 from app.models import (
+    AssistantChatRequest,
+    AssistantReply,
     ContinueRequest,
     ContinueResult,
     ConversationReplyRequest,
@@ -34,9 +39,17 @@ from app.models import (
     FollowUpRequest,
     IntakeRequest,
     IntakeResult,
+    InvoiceCreateRequest,
+    InvoicePaidRequest,
     NotifyRequest,
     NotifyResult,
     OutboundDecisionRequest,
+    PortfolioDraftRequest,
+    PortfolioDraftResult,
+    PortfolioPublishRequest,
+    PortfolioPublishResult,
+    PortfolioRejectRequest,
+    PortfolioRejectResult,
     QARequest,
     ReportRequest,
     ReportResult,
@@ -309,6 +322,34 @@ async def revision_create(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post("/invoice/create")
+async def invoice_create(
+    body: InvoiceCreateRequest,
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return await create_invoice(
+            db,
+            body.tenant_id,
+            project_id=body.project_id,
+            rate_robux_per_usd=body.rate_robux_per_usd,
+            amount_robux=body.amount_robux,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/invoice/paid")
+async def invoice_paid(
+    body: InvoicePaidRequest,
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    invoice = await mark_invoice_paid(db, body.tenant_id, body.invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="unknown invoice")
+    return invoice
+
+
 def _notify_result(result: dict[str, Any]) -> NotifyResult:
     """Map an outbound helper result onto the public ``NotifyResult`` shape."""
     status_value = result.get("status")
@@ -391,6 +432,64 @@ async def conversation_reply(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _notify_result(result)
+
+
+@router.post("/assistant/chat", response_model=AssistantReply)
+async def assistant_chat(
+    body: AssistantChatRequest,
+    db: Database = Depends(get_db),
+) -> AssistantReply:
+    """One assistant turn: read/write studio data through a bounded tool loop."""
+    llm = await build_llm_for_tenant(db, body.tenant_id, get_settings())
+    try:
+        return await assistant_turn(
+            db,
+            llm,
+            tenant_id=body.tenant_id,
+            user_id=body.user_id,
+            message=body.message,
+            thread_id=body.thread_id,
+        )
+    except LLMError as exc:
+        logger.warning("assistant turn failed tenant=%s: %s", body.tenant_id, exc)
+        detail = "assistant_rate_limited" if "429" in str(exc) else "assistant_unavailable"
+        raise HTTPException(status_code=502, detail=detail) from exc
+
+
+@router.post("/portfolio/draft", response_model=PortfolioDraftResult)
+async def portfolio_draft(
+    body: PortfolioDraftRequest,
+    db: Database = Depends(get_db),
+) -> PortfolioDraftResult:
+    """Draft a portfolio caption for a finished project (never publishes)."""
+    llm = await build_llm_for_tenant(db, body.tenant_id, get_settings())
+    return await draft_for_project(
+        db,
+        llm,
+        body.tenant_id,
+        body.project_id,
+        media_urls=[item.model_dump() for item in body.media],
+    )
+
+
+@router.post("/portfolio/publish", response_model=PortfolioPublishResult)
+async def portfolio_publish(
+    body: PortfolioPublishRequest,
+    db: Database = Depends(get_db),
+) -> PortfolioPublishResult:
+    return await publish_portfolio(db, body.tenant_id, body.post_id)
+
+
+@router.post("/portfolio/reject", response_model=PortfolioRejectResult)
+async def portfolio_reject(
+    body: PortfolioRejectRequest,
+    db: Database = Depends(get_db),
+) -> PortfolioRejectResult:
+    result = await reject_portfolio(db, body.tenant_id, body.post_id, body.reason)
+    return PortfolioRejectResult(
+        status="rejected" if result.get("status") == "rejected" else "skipped",
+        detail=str(result.get("detail") or ""),
+    )
 
 
 app.include_router(router)

@@ -9,6 +9,10 @@ export const SECRET_KEYS = [
   "STRIPE_SECRET_KEY",
   "STRIPE_WEBHOOK_SECRET",
   "RESEND_API_KEY",
+  "X_API_KEY",
+  "X_API_SECRET",
+  "X_ACCESS_TOKEN",
+  "X_ACCESS_SECRET",
 ] as const;
 
 export type SecretKey = (typeof SECRET_KEYS)[number];

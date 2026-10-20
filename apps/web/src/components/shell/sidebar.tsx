@@ -16,11 +16,14 @@ import {
   Repeat2,
   ScrollText,
   Settings,
+  Share2,
+  Sparkles,
   Users,
   type LucideIcon,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useViewMode } from "@/lib/view-mode";
 import { StudioStorage } from "./studio-storage";
 
 type BadgeTone = "count" | "accent" | "live";
@@ -33,12 +36,24 @@ interface NavItem {
   badgeTone?: BadgeTone;
 }
 
+const designerCore: NavItem[] = [
+  { label: "Beranda Desainer", href: "/today", icon: LayoutGrid },
+  { label: "Asisten", href: "/assistant", icon: Sparkles },
+  { label: "Antrian Tugas", href: "/tasks", icon: ListChecks, badgeTone: "accent" },
+  { label: "Proyek & Brief AI", href: "/projects", icon: FolderKanban, badgeTone: "count" },
+  { label: "Upload Hasil Desain", href: "/deliverables", icon: CloudUpload },
+  { label: "Revisi Klien", href: "/revisions", icon: Repeat2 },
+  { label: "Portofolio", href: "/portfolio", icon: Share2 },
+];
+
 const productionCore: NavItem[] = [
   { label: "Overview", href: "/", icon: LayoutGrid },
+  { label: "Assistant", href: "/assistant", icon: Sparkles },
   { label: "Projects & Orders", href: "/projects", icon: FolderKanban, badgeTone: "count" },
   { label: "Task Queue", href: "/tasks", icon: ListChecks, badgeTone: "accent" },
   { label: "Upload & QA", href: "/deliverables", icon: CloudUpload },
   { label: "Revisions", href: "/revisions", icon: Repeat2 },
+  { label: "Portfolio", href: "/portfolio", icon: Share2 },
   { label: "Client CRM", href: "/customers", icon: Users },
   { label: "AI Ops & Agents", href: "/agents", icon: Bot, badge: "LIVE", badgeTone: "live" },
   { label: "Discord Comm", href: "/settings", icon: MessageSquare },
@@ -142,7 +157,11 @@ interface SidebarProps {
 
 export function Sidebar({ projectCount, taskCount }: SidebarProps) {
   const pathname = usePathname();
-  const navItems = withLiveBadges(productionCore, projectCount, taskCount);
+  const { mode } = useViewMode();
+  const isDesigner = mode === "designer";
+
+  const rawItems = isDesigner ? designerCore : productionCore;
+  const navItems = withLiveBadges(rawItems, projectCount, taskCount);
 
   return (
     <aside className="sticky top-0 flex h-screen flex-col border-r border-line bg-surface-1">
@@ -155,18 +174,19 @@ export function Sidebar({ projectCount, taskCount }: SidebarProps) {
             <span className="truncate text-[15px] font-semibold tracking-[-0.01em] text-ink">
               RobloxOps
             </span>
-            <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-ink-dim">OS</span>
+            <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-brand font-semibold">
+              {isDesigner ? "CREATOR" : "STUDIO"}
+            </span>
           </div>
           <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.18em] text-ink-dim">
-            Studio Pipeline
+            {isDesigner ? "Designer Workspace" : "Studio Pipeline"}
           </p>
         </div>
-        <PanelLeft size={15} className="shrink-0 text-ink-dim" aria-hidden="true" />
       </div>
 
       <nav aria-label="Primary" className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
         <p className="px-2 pb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-dim">
-          Production Core
+          {isDesigner ? "Menu Utama" : "Production Core"}
         </p>
         <ul className="space-y-0.5">
           {navItems.map((item) => (
@@ -174,14 +194,18 @@ export function Sidebar({ projectCount, taskCount }: SidebarProps) {
           ))}
         </ul>
 
-        <p className="px-2 pb-2 pt-6 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-dim">
-          Configuration
-        </p>
-        <ul className="space-y-0.5">
-          {configuration.map((item) => (
-            <NavRow key={item.label} item={item} active={isActive(pathname, item.href)} />
-          ))}
-        </ul>
+        {!isDesigner && (
+          <>
+            <p className="px-2 pb-2 pt-6 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-dim">
+              Configuration
+            </p>
+            <ul className="space-y-0.5">
+              {configuration.map((item) => (
+                <NavRow key={item.label} item={item} active={isActive(pathname, item.href)} />
+              ))}
+            </ul>
+          </>
+        )}
       </nav>
 
       <StudioStorage />
