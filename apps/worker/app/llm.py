@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Protocol
 
 import httpx
@@ -28,6 +29,16 @@ from app.models import (
 
 class LLMError(Exception):
     """Transport/HTTP failure talking to the LLM provider."""
+
+
+class LLMRateLimited(LLMError):
+    """The provider rejected the request for rate or quota reasons.
+
+    Retrying immediately cannot help: a per-day quota does not reset in
+    milliseconds, and every attempt still counts against the limit. The client
+    therefore stops calling the provider for a cooldown window and lets the
+    caller surface a "try later" message instead.
+    """
 
 
 class LLMValidationError(LLMError):
@@ -79,6 +90,26 @@ def _validate(model: type[BaseModel], data: Any) -> Any:
         raise LLMValidationError(f"{model.__name__} validation failed: {exc}") from exc
 
 
+def _quota_exhausted(body: str) -> bool:
+    """True when a 429 is a hard quota/billing limit, not a short burst.
+
+    Google returns ``RESOURCE_EXHAUSTED`` with ``free_tier_requests`` for the
+    daily free-tier cap; OpenAI returns ``insufficient_quota``. Retrying either
+    of those is pointless and only burns the counter further.
+    """
+    text = body.lower()
+    return any(
+        marker in text
+        for marker in (
+            "free_tier",
+            "insufficient_quota",
+            "resource_exhausted",
+            "quota",
+            "billing",
+        )
+    )
+
+
 def _tools_rejected(exc: Exception) -> bool:
     """True only for a 4xx that specifically complains about ``tools``.
 
@@ -113,6 +144,10 @@ class OpenAICompatibleLLM:
         self._model_mid = model_mid or settings.llm_model_mid
         self._model_vision = model_vision or settings.llm_model_vision
         self._timeout = settings.llm_timeout_seconds
+        # Set after a quota rejection so the next calls fail fast instead of
+        # hitting the provider again (see LLMRateLimited).
+        self._blocked_until = 0.0
+        self._quota_cooldown = 300.0
         # Flipped to False the first time a provider rejects `tools`; the
         # assistant loop then degrades to a JSON "plan" instead of tool calls.
         self.supports_tools = True
@@ -124,6 +159,10 @@ class OpenAICompatibleLLM:
         decide how to interpret it.
         """
         headers = {"Authorization": f"Bearer {self._api_key}"}
+        if time.monotonic() < self._blocked_until:
+            raise LLMRateLimited(
+                "LLM quota is exhausted; skipping the request until the cooldown ends"
+            )
         last_error: Exception | None = None
         for _ in range(2):  # one retry on transient failures
             try:
@@ -139,15 +178,21 @@ class OpenAICompatibleLLM:
                 return message
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
-                # Retry rate limits and server-side errors; fail fast otherwise.
-                if status_code == 429 or 500 <= status_code < 600:
-                    last_error = exc
-                    continue
                 body = ""
                 try:
                     body = exc.response.text[:300]
                 except Exception:  # noqa: BLE001 - body is best-effort context
                     body = ""
+                if status_code == 429:
+                    # Never retry a rate limit: the next attempt fails too and
+                    # still counts against the quota. Back off instead.
+                    if _quota_exhausted(body):
+                        self._blocked_until = time.monotonic() + self._quota_cooldown
+                    raise LLMRateLimited(f"LLM rate limited: {exc} {body}".strip()) from exc
+                # Retry server-side errors; fail fast otherwise.
+                if 500 <= status_code < 600:
+                    last_error = exc
+                    continue
                 raise LLMError(f"LLM request failed: {exc} {body}".strip()) from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc

@@ -20,7 +20,7 @@ from app.handlers.intake import handle_intake
 from app.handlers.qa import run_qa
 from app.handlers.revision import create_revision
 from app.invoices import create_invoice, mark_invoice_paid
-from app.llm import LLMError, build_llm_for_tenant, get_llm
+from app.llm import LLMError, LLMRateLimited, build_llm_for_tenant, get_llm
 from app.outbound import (
     approve_outbound,
     reject_outbound,
@@ -452,7 +452,8 @@ async def assistant_chat(
         )
     except LLMError as exc:
         logger.warning("assistant turn failed tenant=%s: %s", body.tenant_id, exc)
-        detail = "assistant_rate_limited" if "429" in str(exc) else "assistant_unavailable"
+        rate_limited = isinstance(exc, LLMRateLimited) or "429" in str(exc)
+        detail = "assistant_rate_limited" if rate_limited else "assistant_unavailable"
         raise HTTPException(status_code=502, detail=detail) from exc
 
 
@@ -463,13 +464,22 @@ async def portfolio_draft(
 ) -> PortfolioDraftResult:
     """Draft a portfolio caption for a finished project (never publishes)."""
     llm = await build_llm_for_tenant(db, body.tenant_id, get_settings())
-    return await draft_for_project(
-        db,
-        llm,
-        body.tenant_id,
-        body.project_id,
-        media_urls=[item.model_dump() for item in body.media],
-    )
+    try:
+        return await draft_for_project(
+            db,
+            llm,
+            body.tenant_id,
+            body.project_id,
+            media_urls=[item.model_dump() for item in body.media],
+        )
+    except LLMError as exc:
+        logger.warning("portfolio draft failed tenant=%s: %s", body.tenant_id, exc)
+        detail = (
+            "portfolio_rate_limited"
+            if isinstance(exc, LLMRateLimited) or "429" in str(exc)
+            else "portfolio_unavailable"
+        )
+        raise HTTPException(status_code=502, detail=detail) from exc
 
 
 @router.post("/portfolio/publish", response_model=PortfolioPublishResult)
