@@ -4,9 +4,8 @@
 > alone. It states what exists, how to verify it, and what is left. Read
 > `AGENTS.md` first for the rules and commands.
 
-**Snapshot: 2026-10-20** · branch `master` · commit `058d1b7`
-("feat: assistant chat, portfolio publishing, notifications and security
-hardening") · working tree clean.
+**Snapshot: 2026-10-20** · branch `master` · run `git log -1` for the exact
+commit · working tree clean after each phase commit.
 
 ## Status at a glance
 
@@ -32,7 +31,7 @@ hardening") · working tree clean.
 | Discord bot: channels, threads, `/status` `/brief` `/revision` `/help` | done, needs a real guild |
 | Next.js dashboard: 19 pages + 6 API routes | done |
 | CI: typecheck + build + pytest + compileall | done (`.github/workflows/ci.yml`) |
-| Browser end-to-end tests | **not started** |
+| Browser end-to-end tests (Playwright, demo mode) | done — 13 tests |
 | RLS integration tests (two tenants, live Postgres) | **not started** |
 | Structured logging / runbook / health page | **not started** |
 | tRPC API | scaffolded, unused by the UI |
@@ -46,10 +45,11 @@ npm run typecheck                                   # tsc --noEmit, clean
 npm run build                                       # next build, succeeds
 npm run scan:secrets                                # no findings
 npm run scan:secrets:all                            # includes git history
+npm run e2e                                         # 13 Playwright tests, demo mode
 
 # worker (offline: fake DB + FakeLLM, no network)
 cd apps/worker
-.venv/Scripts/python.exe -m pytest -q               # 142 passed
+.venv/Scripts/python.exe -m pytest -q               # 147 passed
 .venv/Scripts/python.exe -m compileall -q app       # clean
 ```
 
@@ -86,26 +86,24 @@ in the dashboard layout.
 
 ### P1 — proof
 
-3. **Browser end-to-end tests.** No Playwright suite; the dashboard is verified by
-   hand.
-4. **RLS integration tests.** Isolation is asserted by policy review, not by a
+3. **RLS integration tests.** Isolation is asserted by policy review, not by a
    test that logs in as two tenants against a real Postgres.
-5. **Observability.** Logs are plain text; there is no correlation id, no queue
+4. **Observability.** Logs are plain text; there is no correlation id, no queue
    depth on `/health`, and no operator runbook.
 
 ### P2 — polish
 
-6. **tRPC is dead code.** `TRPCReactProvider` is never mounted; routers are only
+5. **tRPC is dead code.** `TRPCReactProvider` is never mounted; routers are only
    reachable via `/api/trpc`. Delete it or migrate mutations.
-7. **Seed tenant has no `monitored_channel_ids`**, so the bot monitors nothing for
+6. **Seed tenant has no `monitored_channel_ids`**, so the bot monitors nothing for
    the demo tenant out of the box.
-8. **Reference-code doc drift.** README historically said `ROB-{YY}{seq:04d}`; the
+7. **Reference-code doc drift.** README historically said `ROB-{YY}{seq:04d}`; the
    function returns `ROB-{seq}`. The function is the source of truth.
-9. **Unused worker config:** `supabase_url`, `supabase_service_role_key`,
+8. **Unused worker config:** `supabase_url`, `supabase_service_role_key`,
    `discord_application_id` are declared in `app/config.py` but never read.
-10. **Payments / Robux.** `payment_status` is edited by hand; no rate tracking,
-    invoice generation or payment follow-up agent.
-11. **Deployment is manual.** The worker has a Dockerfile; the web app has no
+9. **Payments / Robux.** `payment_status` is edited by hand; no rate tracking,
+   invoice generation or payment follow-up agent.
+10. **Deployment is manual.** The worker has a Dockerfile; the web app has no
     deployment config in the repo.
 
 ## Environment setup checklist (not in repo — required to run live)

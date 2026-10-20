@@ -93,8 +93,9 @@ Worker API / bot / queue consumer (see apps/worker/README.md):
 
 - `npm --workspace apps/web run typecheck`
 - `npm --workspace apps/web run build`
-- worker `pytest` (142 tests currently) + `compileall`
+- worker `pytest` (147 tests currently) + `compileall`
 - `npm run scan:secrets` (no findings)
+- `npm run e2e` (13 Playwright tests, demo mode)
 
 ## Where things are going
 

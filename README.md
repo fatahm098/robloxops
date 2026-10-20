@@ -16,7 +16,8 @@ worker test suite. Every dashboard surface renders live Supabase data when it is
 configured and falls back to `src/lib/mock.ts` when it is not.
 
 Last verified **2026-10-20**: `tsc --noEmit` clean, `next build` succeeds,
-**142 worker tests pass**, `npm run scan:secrets:all` reports no findings.
+**147 worker tests pass**, **13 Playwright tests pass**, and
+`npm run scan:secrets:all` reports no findings.
 
 | Area | State |
 |---|---|
@@ -33,6 +34,7 @@ Last verified **2026-10-20**: `tsc --noEmit` clean, `next build` succeeds,
 | In-app assistant with 9 audited tools | done |
 | Portfolio drafts + X publishing behind an approval gate | done |
 | Realtime dashboard refresh (`postgres_changes` → `router.refresh()`) | done |
+| Browser end-to-end tests (Playwright, demo mode, 13 scenarios) | done |
 | tRPC API | scaffolded but unused by the UI |
 | Payments/Robux | not started |
 
@@ -90,11 +92,18 @@ docs/                        DATABASE, AUTH, BILLING, ASSISTANT, PORTFOLIO,
 ```bash
 npm install
 npm run dev          # http://localhost:3000
+npm run e2e          # Playwright, builds + starts on :3100 in demo mode
 ```
 
 Without `NEXT_PUBLIC_SUPABASE_URL`, every page reads from `src/lib/mock.ts`, so the
 dashboard is fully navigable. Same idea in the worker: without `LLM_API_KEY` it uses
 a deterministic FakeLLM.
+
+The Playwright suite forces the Supabase variables to empty strings, so it always
+runs in demo mode — no credentials, no database. It covers the auth screens, the
+overview, the project list and its filters, project detail, the revision action,
+the outbound approval queue, revisions, billing and the audit log. First run needs
+`npx playwright install chromium`.
 
 ## Supabase setup
 
@@ -296,8 +305,6 @@ See [`docs/HANDOFF.md`](docs/HANDOFF.md) for the full, prioritized list. Summary
   `app/outbound.py`.
 - **tRPC is scaffolded but unused.** The UI uses server components and server
   actions; `src/server/routers` is only reachable via `/api/trpc`.
-- **No end-to-end browser tests yet.** Worker logic is covered by pytest; the
-  dashboard is verified manually.
 - **Realtime requires the `supabase_realtime` publication** (migration `0015`).
   Without it the dashboard still works but only updates on navigation.
 - **Deployment is not automated.** There is a Dockerfile for the worker; the web

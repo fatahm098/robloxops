@@ -44,6 +44,10 @@ htmlcov/
 # --- Tooling / OS --------------------------------------------------------
 .vercel
 coverage/
+playwright-report/
+test-results/
+blob-report/
+.playwright/
 *.log
 npm-debug.log*
 .DS_Store

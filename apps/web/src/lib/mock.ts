@@ -383,7 +383,19 @@ const detail104: ProjectDetailWithOutbound = {
     },
   ],
   humanTakeover: false,
-  outboundPending: [],
+  outboundPending: [
+    {
+      id: "out_104_1",
+      projectId: "p_104",
+      kind: "deliverable",
+      body:
+        "Halo Kev, versi 2 rigged accessory sudah lolos QA (skor 94/100). " +
+        "Aku kirim file finalnya sekarang, tolong cek socket-nya ya.",
+      status: "pending",
+      createdAt: "2026-10-24T12:05:00Z",
+      approvedBy: null,
+    },
+  ],
 };
 
 const details: Record<string, ProjectDetailWithOutbound> = { p_104: detail104 };
