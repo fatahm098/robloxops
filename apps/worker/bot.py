@@ -149,6 +149,26 @@ class BotRepo:
         return row
 
 
+def approval_mode_for(kind: str, settings: dict[str, Any]) -> str:
+    """Resolve the approval gate for one outbound kind.
+
+    Small mirror of ``app.outbound.approval_for``: the bot runs as a
+    separate process and must not import the worker's outbound module, so
+    this copy gates the direct-send fallback. Keep in sync with
+    ``app.outbound.approval_for``: a per-kind ``settings["approval"]`` map
+    wins, else the legacy ``settings["approval_mode"]`` applies, and both
+    default to ``"auto"``.
+    """
+    approval = settings.get("approval")
+    if isinstance(approval, dict):
+        value = approval.get(kind)
+        if isinstance(value, str) and value:
+            return value
+        return "auto"
+    mode = settings.get("approval_mode")
+    return mode if isinstance(mode, str) and mode else "auto"
+
+
 class RobloxOpsBot(discord.Client):
     def __init__(self, settings: Settings, repo: BotRepo) -> None:
         intents = discord.Intents.default()
@@ -231,7 +251,7 @@ class RobloxOpsBot(discord.Client):
                 )
             if notified is None:
                 target = thread if thread is not None else message.channel
-                await target.send(reply)
+                await self._send_or_hold(tenant, "first_message", target, reply)
         elif kind == "conversation_continue" and result.get("reply"):
             reply = result["reply"]
             notified = None
@@ -240,7 +260,7 @@ class RobloxOpsBot(discord.Client):
                     tenant, result["project_id"], "status", reply
                 )
             if notified is None:
-                await message.channel.send(reply)
+                await self._send_or_hold(tenant, "status", message.channel, reply)
 
     async def _open_thread(
         self, message: discord.Message, tenant: ChannelTenant, result: dict[str, Any]
@@ -256,6 +276,30 @@ class RobloxOpsBot(discord.Client):
         except (discord.HTTPException, KeyError) as exc:
             logger.warning("thread creation failed, replying in channel: %s", exc)
             return None
+
+    async def _send_or_hold(
+        self,
+        tenant: ChannelTenant,
+        kind: str,
+        target: Any,
+        reply: str,
+    ) -> None:
+        """Direct-send fallback, gated on the tenant's approval mode.
+
+        When the tenant requires preview/human approval for this kind, a
+        failed ``/notify`` must not silently bypass the gate: log and hold
+        the reply instead of sending it directly. The inbound message is
+        already queued, so nothing is lost — the studio can send the reply
+        from the dashboard. In ``auto`` mode the fallback is unchanged.
+        """
+        if approval_mode_for(kind, tenant.settings) in ("preview", "human"):
+            logger.warning(
+                "holding %s reply for tenant %s: /notify failed and approval is required",
+                kind,
+                tenant.tenant_id,
+            )
+            return
+        await target.send(reply)
 
     async def _notify(
         self,
