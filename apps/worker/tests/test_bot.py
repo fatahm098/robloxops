@@ -291,11 +291,14 @@ async def test_paused_tenant_thread_message_records_escalation_and_never_replies
 
 def _unpaused_bot(
     monkeypatch: pytest.MonkeyPatch,
+    settings: dict[str, Any] | None = None,
 ) -> tuple[RobloxOpsBot, ChannelTenant, FakeRepo]:
     monkeypatch.setattr(discord, "TextChannel", FakeTextChannel)
     monkeypatch.setattr(discord, "Thread", FakeThreadChannel)
     tenant = ChannelTenant(
-        uuid4(), "Pixel Forge", {"monitored_channel_ids": ["chan-1"]}
+        uuid4(),
+        "Pixel Forge",
+        {"monitored_channel_ids": ["chan-1"], **(settings or {})},
     )
     repo = FakeRepo(tenant, {"chan-1"})
     return RobloxOpsBot(Settings(), repo), tenant, repo  # type: ignore[arg-type]
@@ -415,6 +418,57 @@ async def test_conversation_continue_falls_back_to_direct_send_when_notify_unrea
     await bot.on_message(message)  # type: ignore[arg-type]
 
     assert thread.sent == [reply]
+    assert any(path == "/notify" for path, _payload in calls)
+
+
+@pytest.mark.asyncio
+async def test_intake_holds_reply_when_notify_unreachable_and_approval_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot, _tenant, _repo = _unpaused_bot(
+        monkeypatch, {"approval": {"first_message": "preview"}}
+    )
+    call, calls = _worker_with_notify(
+        intake={
+            "status": "created",
+            "intent": "commission_request",
+            "reply": "Thanks! Reference ROB-1.",
+            "reference_code": "ROB-1",
+            "project_id": str(uuid4()),
+        },
+        notify=None,
+    )
+    bot._call_worker = call  # type: ignore[method-assign]
+
+    channel = FakeTextChannel("chan-1")
+    message = FakeMessage(channel, content="I want to commission a hoodie", mid="msg-5")
+
+    await bot.on_message(message)  # type: ignore[arg-type]
+
+    assert message.created_thread is not None
+    assert message.created_thread.sent == [], "preview approval must not be bypassed"
+    assert channel.sent == []
+    assert any(path == "/notify" for path, _payload in calls)
+
+
+@pytest.mark.asyncio
+async def test_conversation_continue_holds_reply_when_notify_unreachable_and_approval_human(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot, _tenant, _repo = _unpaused_bot(monkeypatch, {"approval_mode": "human"})
+    reply = "Update on ROB-1 — status is now in progress."
+    call, calls = _worker_with_notify(
+        cont={"status": "ok", "reply": reply, "project_id": str(uuid4())},
+        notify=None,
+    )
+    bot._call_worker = call  # type: ignore[method-assign]
+
+    thread = FakeThreadChannel("thread-1", "chan-1")
+    message = FakeMessage(thread, content="Here is an update", mid="msg-6")
+
+    await bot.on_message(message)  # type: ignore[arg-type]
+
+    assert thread.sent == [], "human approval must not be bypassed"
     assert any(path == "/notify" for path, _payload in calls)
 
 
