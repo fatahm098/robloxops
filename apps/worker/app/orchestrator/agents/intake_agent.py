@@ -37,7 +37,7 @@ UGC_POLY_LIMITS = {
 
 LEXI_SYSTEM_PROMPT = """Kamu adalah Lexi, AI Asisten Studio RobloxOps yang melayani klien di Discord.
 Karakter & Etika Komunikasi:
-- Perkenalkan dirimu sebagai Lexi dari RobloxOps Studio HANYA di sapaan pesan pertama (contoh: 'Halo Kak! Saya Lexi dari RobloxOps Studio...'). Pada balasan-balasan berikutnya, lanjutkan percakapan secara mengalir, santai, dan alami tanpa perlu memperkenalkan nama ulang setiap kali membalas.
+- ATURAN PERKENALAN MUTLAK: Perkenalkan dirimu ("Halo Kak! Saya Lexi dari RobloxOps Studio 👋") HANYA SEKALI di chat pertama paling awal saat klien baru menyapa. PADA PESAN KEDUA DAN SETERUSNYA: DILARANG KERAS memperkenalkan diri lagi. DILARANG mengulang "Saya Lexi", DILARANG mengulang salam pembuka kaku. Langsung jawab to the point, santai, ramah, dan mengalir!
 - Sangat sopan, ramah, hangat, santai, dan bisa diajak mengobrol biasa seperti admin studio manusia profesional (selalu panggil klien dengan 'Kak' atau nama mereka jika ada).
 - JANGAN PERNAH menyodorkan formulir kaku, template teks robotik 'Catatan Konsep Sementara', atau daftar harga mentah jika klien baru sekadar menyapa atau bertanya santai.
 - JIKA KLIEN MEMINTA SARAN ATAU PENDAPAT (contoh: 'menurut kakak?', 'menurut kaka gimana?', 'enaknya bikin apa ya?', 'rekomendasi dong', 'bagusan mana?'):
@@ -46,6 +46,23 @@ Karakter & Etika Komunikasi:
 - Jika klien menceritakan ide desainnya, berikan tanggapan antusias, tanyakan detail warna atau apakah mereka punya link gambar referensi.
 - Berikan estimasi harga dalam Rupiah (misal Rp 150.000 - Rp 350.000 tergantung kerumitan) secara wajar dan sopan.
 - HANYA jika klien sudah jelas-jelas sepakat dengan konsep & harga dan meminta pembayaran / invoice QRIS (misal: 'oke deal buatkan invoice', 'oke buatkan sekarang', 'oke lanjut QRIS', 'siap bayar min', 'gas bikin qris-nya'), konfirmasikan dengan senang hati dan WAJIB sertakan kode [DEAL_CONFIRMED] di baris paling akhir balasanmu."""
+
+
+def strip_repeated_intro(text: str) -> str:
+    """Strip repeated greetings and self-introductions on multi-turn conversations."""
+    cleaned = re.sub(
+        r"^(?:(?:Halo|Hai|Hello|Salam)(?:\s+Kak(?:ak)?)?[\s\!,.\u202f👋]*)*(?:(?:nama\s+)?saya\s+Lexi[^\n]*?(?:studio|robloxops|discord)?[^\n]*?[\.\!\?\n]+[\s\u202f]*)+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    cleaned = re.sub(
+        r"^(?:(?:Halo|Hai|Hello)(?:\s+Kak(?:ak)?)?[\s\!,.\u202f👋]*)?(?:Saya\s+Lexi[^\.\!\?\n]*[\.\!\?\n]+[\s\u202f]*)",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned or text
 
 
 def extract_brief_details(text: str, existing: Dict[str, Any]) -> Dict[str, Any]:
@@ -146,18 +163,30 @@ def intake_agent_node(state: AgentState) -> AgentState:
     except Exception as e:
         logger.warning("Groq call failed in intake_agent: %s", e)
 
+    # Determine if this is the very first turn of conversation
+    is_first_turn = len([m for m in history_messages if m.get("role") in ("assistant", "ai")]) == 0
+
     # Polite natural fallback if LLM is unavailable
     if not ai_reply:
-        ai_reply = (
-            f"Halo {customer_name}! 👋 Senang bisa terhubung.\n"
-            f"Saya Lexi dari RobloxOps Studio. Ada ide atau konsep aset Roblox yang ingin Kakak buat hari ini? "
-            f"Ceritakan saja santai ya, saya siap bantu pandu! 😊"
-        )
+        if is_first_turn:
+            ai_reply = (
+                f"Halo {customer_name}! 👋 Senang bisa terhubung.\n"
+                f"Saya Lexi dari RobloxOps Studio. Ada ide atau konsep aset Roblox yang ingin Kakak buat hari ini? "
+                f"Ceritakan saja santai ya, saya siap bantu pandu! 😊"
+            )
+        else:
+            ai_reply = (
+                f"Ada ide atau konsep aset Roblox yang ingin Kakak tanyakan atau buat? "
+                f"Ceritakan saja santai ya, saya siap bantu pandu! 😊"
+            )
     else:
-        # Introduce Lexi warmly on first turn if not already mentioned
-        is_first_turn = len([m for m in history_messages if m.get("role") in ("assistant", "ai")]) == 0
-        if is_first_turn and "lexi" not in ai_reply.lower():
-            ai_reply = f"Halo Kak! Saya Lexi dari RobloxOps Studio 👋\n{ai_reply}"
+        # Introduce Lexi ONLY on the very first turn
+        if is_first_turn:
+            if "lexi" not in ai_reply.lower():
+                ai_reply = f"Halo Kak! Saya Lexi dari RobloxOps Studio 👋\n{ai_reply}"
+        else:
+            # On subsequent turns, strip any repeated greeting/introduction so it never repeats
+            ai_reply = strip_repeated_intro(ai_reply)
 
     # Check for confirmation deal tag
     has_deal_tag = "[DEAL_CONFIRMED]" in ai_reply
