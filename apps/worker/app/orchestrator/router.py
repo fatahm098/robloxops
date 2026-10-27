@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.orchestrator.graph import process_customer_turn, robloxops_graph
@@ -31,36 +31,97 @@ class ChatTurnRequest(BaseModel):
     thread_id: str = Field(default="thread-demo-001", description="Unique conversation session id")
     customer_name: str = Field(default="Pelanggan", description="Customer display name")
     message: str = Field(description="Incoming customer chat message")
+    tenant_id: Optional[str] = None
+    author_id: Optional[str] = None
+    channel_id: Optional[str] = None
 
 
-class QRISCreateRequest(BaseModel):
-    customer_name: str
-    amount_idr: int = Field(gt=0, description="Amount in Indonesian Rupiah (IDR)")
-    description: str = "Roblox 3D Commission"
+async def persist_dispatched_project(
+    db: Any,
+    tenant_id: str,
+    author_id: str,
+    customer_name: str,
+    thread_id: str,
+    state: Dict[str, Any],
+) -> None:
+    if not db or not tenant_id:
+        return
+    try:
+        # 1. Upsert customer
+        cust_row = await db.fetchrow(
+            tenant_id,
+            """
+            INSERT INTO customers (tenant_id, discord_user_id, discord_username, display_name)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (tenant_id, discord_user_id)
+            DO UPDATE SET display_name = EXCLUDED.display_name
+            RETURNING id
+            """,
+            tenant_id,
+            author_id or f"user-{customer_name}",
+            customer_name,
+            customer_name,
+        )
+        customer_id = cust_row["id"] if cust_row else None
+        if not customer_id:
+            return
 
+        brief = state.get("brief_data") or {}
+        asset_type = brief.get("asset_type", "accessory")
+        style = brief.get("style", "Custom")
+        title = f"Create {asset_type.capitalize()}: {style}"
 
-class QRISVerifyRequest(BaseModel):
-    invoice_id: str
+        # 2. Check if project already exists for this thread
+        existing_proj = await db.fetchrow(
+            tenant_id,
+            "SELECT id, reference_code FROM projects WHERE tenant_id = $1 AND discord_thread_id = $2 LIMIT 1",
+            tenant_id,
+            thread_id,
+        )
+        if existing_proj:
+            state["reference_code"] = existing_proj["reference_code"]
+        else:
+            # Insert project
+            proj_row = await db.fetchrow(
+                tenant_id,
+                """
+                INSERT INTO projects (
+                    tenant_id, customer_id, title, status, project_type,
+                    payment_status, discord_thread_id
+                )
+                VALUES ($1, $2, $3, 'in_design', $4, 'paid', $5)
+                RETURNING id, reference_code
+                """,
+                tenant_id,
+                customer_id,
+                title,
+                asset_type,
+                thread_id,
+            )
+            project_id = proj_row["id"]
+            state["reference_code"] = proj_row["reference_code"]
 
-
-class DynamicToolCreateRequest(BaseModel):
-    name: str
-    description: str
-    python_code: str
-
-
-class DynamicToolRunRequest(BaseModel):
-    name: str
-    kwargs: Dict[str, Any] = Field(default_factory=dict)
-
-
-class RAGSearchRequest(BaseModel):
-    query: str
-    top_k: int = 3
+            # Insert task for the 3D designer
+            poly = brief.get("poly_budget", 4000)
+            tex = brief.get("texture_res", "1024x1024")
+            task_desc = f"Style: {style}\nMax Tris: {poly}\nTexture: {tex}\nFormat: .fbx & .rbxm"
+            await db.execute(
+                tenant_id,
+                """
+                INSERT INTO tasks (tenant_id, project_id, title, description, status)
+                VALUES ($1, $2, $3, $4, 'in_progress')
+                """,
+                tenant_id,
+                project_id,
+                f"3D Modeling & Texturing: {asset_type.capitalize()}",
+                task_desc,
+            )
+    except Exception as e:
+        logger.warning("Could not persist dispatched project: %s", e)
 
 
 @router.post("/chat")
-async def chat_endpoint(req: ChatTurnRequest) -> Dict[str, Any]:
+async def chat_endpoint(req: ChatTurnRequest, request: Request) -> Dict[str, Any]:
     """Execute one customer turn through the LangGraph multi-agent network."""
     try:
         result = process_customer_turn(
@@ -68,6 +129,20 @@ async def chat_endpoint(req: ChatTurnRequest) -> Dict[str, Any]:
             customer_name=req.customer_name,
             discord_user_id=req.thread_id,
         )
+
+        # If project reached in_design, persist to DB so designer sees it on web dashboard
+        if result.get("current_stage") == "in_design":
+            db = getattr(request.app.state, "db", None)
+            target_tenant = req.tenant_id or "11111111-1111-4111-8111-111111111111"
+            await persist_dispatched_project(
+                db=db,
+                tenant_id=target_tenant,
+                author_id=req.author_id or req.thread_id,
+                customer_name=req.customer_name,
+                thread_id=req.thread_id,
+                state=result,
+            )
+
         return {
             "thread_id": req.thread_id,
             "response": result.get("reply_to_customer", ""),

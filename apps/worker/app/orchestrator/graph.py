@@ -44,8 +44,17 @@ def supervisor_router(state: AgentState) -> Literal["intake", "billing", "task",
         return "social"
 
     # 3. Payment / QRIS handling
-    payment_words = ["bayar", "qris", "invoice", "transfer", "lunas", "sudah bayar", "dah bayar", "cek bayar"]
-    if any(w in user_msg for w in payment_words) or stage == "payment_pending":
+    confirm_payment_words = [
+        "sudah bayar", "dah bayar", "cek bayar", "lunas", "bukti transfer",
+        "udah transfer", "sudah transfer", "paid"
+    ]
+    request_qris_words = [
+        "minta qris", "buatkan qris", "kirim qris", "buatkan invoice",
+        "lanjut bayar", "bayar sekarang", "minta invoice"
+    ]
+    if any(w in user_msg for w in confirm_payment_words) and payment.get("invoice_id"):
+        return "billing"
+    if any(w in user_msg for w in request_qris_words):
         return "billing"
 
     # 4. If payment was just verified, dispatch task
