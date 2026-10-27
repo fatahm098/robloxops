@@ -20,7 +20,7 @@ from app.handlers.brief import handle_continue
 from app.handlers.intake import handle_intake
 from app.llm import FakeLLM
 from app.models import ContinueRequest, IntakeRequest
-from bot import BotRepo, ChannelTenant, RobloxOpsBot
+from bot import DM_FALLBACK, BotRepo, ChannelTenant, RobloxOpsBot
 
 
 class NullPool:
@@ -116,12 +116,41 @@ class FakeMessage:
         return self.created_thread
 
 
+class FakeDMChannel:
+    def __init__(self, cid: str = "dm-1") -> None:
+        self.id = cid
+        self.sent: list[Any] = []
+
+    async def send(self, content: Any) -> None:
+        self.sent.append(content)
+
+
+class FakeDMMessage:
+    """A DM has no guild and cannot create threads."""
+
+    def __init__(self, channel: FakeDMChannel, *, content: str, mid: str = "dm-msg-1") -> None:
+        self.channel = channel
+        self.guild = None
+        self.author = FakeUser()
+        self.content = content
+        self.id = mid
+
+
 class FakeRepo:
-    def __init__(self, tenant: ChannelTenant, monitored: set[str]) -> None:
+    def __init__(
+        self,
+        tenant: ChannelTenant,
+        monitored: set[str],
+        *,
+        dm_tenants: list[ChannelTenant] | None = None,
+        dm_project: dict[str, Any] | None = None,
+    ) -> None:
         self.tenant = tenant
         self.monitored = monitored
         self.enqueued: list[str] = []
         self.linked: list[str] = []
+        self.dm_tenants = dm_tenants
+        self.dm_project = dm_project
         self.project: dict[str, Any] | None = {
             "id": uuid4(),
             "reference_code": "ROB-1",
@@ -132,6 +161,14 @@ class FakeRepo:
 
     async def tenant_for_guild(self, guild_id: Any) -> ChannelTenant:
         return self.tenant
+
+    async def tenants_for_guilds(self, guild_ids: list[str]) -> list[ChannelTenant]:
+        if self.dm_tenants is not None:
+            return self.dm_tenants if guild_ids else []
+        return [self.tenant] if guild_ids else []
+
+    async def project_by_dm_channel(self, tenant_id: Any, channel_id: str) -> Any | None:
+        return self.dm_project
 
     def monitored_channels(self, settings: dict[str, Any]) -> set[str]:
         return self.monitored
@@ -416,6 +453,139 @@ async def test_conversation_continue_falls_back_to_direct_send_when_notify_unrea
 
     assert thread.sent == [reply]
     assert any(path == "/notify" for path, _payload in calls)
+
+
+# --------------------------------------------------------------------------- #
+# Private messages (DM -> tenant via shared guild)
+# --------------------------------------------------------------------------- #
+
+
+def _shared(ids: list[str]) -> Any:
+    async def call(user_id: int) -> list[str]:
+        return ids
+
+    return call
+
+
+def _dm_bot(repo: FakeRepo) -> RobloxOpsBot:
+    return RobloxOpsBot(Settings(), repo)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_dm_intake_resolves_single_tenant_and_notifies() -> None:
+    tenant = ChannelTenant(uuid4(), "Pixel Forge", {})
+    repo = FakeRepo(tenant, set(), dm_tenants=[tenant])
+    bot = _dm_bot(repo)
+    bot._shared_guild_ids = _shared(["12345"])  # type: ignore[method-assign]
+    project_id = uuid4()
+    call, calls = _worker_with_notify(
+        intake={
+            "status": "created",
+            "intent": "commission_request",
+            "reply": "Thanks! Reference ROB-2.",
+            "reference_code": "ROB-2",
+            "project_id": str(project_id),
+        },
+        notify={"status": "sent"},
+    )
+    bot._call_worker = call  # type: ignore[method-assign]
+
+    channel = FakeDMChannel("dm-1")
+    message = FakeDMMessage(channel, content="I want a Y2K hoodie", mid="dm-msg-1")
+
+    await bot.on_message(message)  # type: ignore[arg-type]
+
+    assert repo.enqueued == ["intake"]
+    assert repo.linked == ["dm-1"]
+    assert channel.sent == []
+    notify_calls = [payload for path, payload in calls if path == "/notify"]
+    assert notify_calls == [
+        {
+            "tenant_id": str(tenant.tenant_id),
+            "project_id": str(project_id),
+            "kind": "first_message",
+            "message": "Thanks! Reference ROB-2.",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dm_without_shared_studio_sends_fallback() -> None:
+    tenant = ChannelTenant(uuid4(), "Pixel Forge", {})
+    repo = FakeRepo(tenant, set(), dm_tenants=[])
+    bot = _dm_bot(repo)
+    bot._shared_guild_ids = _shared([])  # type: ignore[method-assign]
+    calls: list[str] = []
+
+    async def call(path: str, payload: dict[str, Any]) -> None:
+        calls.append(path)
+        return None
+
+    bot._call_worker = call  # type: ignore[method-assign]
+
+    channel = FakeDMChannel("dm-1")
+    message = FakeDMMessage(channel, content="hello", mid="dm-msg-2")
+
+    await bot.on_message(message)  # type: ignore[arg-type]
+
+    assert channel.sent == [DM_FALLBACK]
+    assert calls == []
+    assert repo.enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_dm_with_ambiguous_tenants_sends_fallback() -> None:
+    first = ChannelTenant(uuid4(), "Studio A", {})
+    second = ChannelTenant(uuid4(), "Studio B", {})
+    repo = FakeRepo(first, set(), dm_tenants=[first, second])
+    bot = _dm_bot(repo)
+    bot._shared_guild_ids = _shared(["1", "2"])  # type: ignore[method-assign]
+
+    async def call(path: str, payload: dict[str, Any]) -> None:
+        raise AssertionError("ambiguous DM must not reach the worker")
+
+    bot._call_worker = call  # type: ignore[method-assign]
+
+    channel = FakeDMChannel("dm-1")
+    message = FakeDMMessage(channel, content="hello", mid="dm-msg-3")
+
+    await bot.on_message(message)  # type: ignore[arg-type]
+
+    assert channel.sent == [DM_FALLBACK]
+
+
+@pytest.mark.asyncio
+async def test_dm_continue_uses_existing_project_and_notifies() -> None:
+    tenant = ChannelTenant(uuid4(), "Pixel Forge", {})
+    project_id = uuid4()
+    repo = FakeRepo(
+        tenant, set(), dm_tenants=[tenant], dm_project={"id": project_id}
+    )
+    bot = _dm_bot(repo)
+    bot._shared_guild_ids = _shared(["12345"])  # type: ignore[method-assign]
+    reply = "The brief is saved; QA starts tomorrow."
+    call, calls = _worker_with_notify(
+        cont={"status": "ok", "reply": reply, "project_id": str(project_id)},
+        notify={"status": "pending_approval"},
+    )
+    bot._call_worker = call  # type: ignore[method-assign]
+
+    channel = FakeDMChannel("dm-1")
+    message = FakeDMMessage(channel, content="any update?", mid="dm-msg-4")
+
+    await bot.on_message(message)  # type: ignore[arg-type]
+
+    assert repo.enqueued == ["conversation_continue"]
+    assert channel.sent == []
+    notify_calls = [payload for path, payload in calls if path == "/notify"]
+    assert notify_calls == [
+        {
+            "tenant_id": str(tenant.tenant_id),
+            "project_id": str(project_id),
+            "kind": "status",
+            "message": reply,
+        }
+    ]
 
 
 # --------------------------------------------------------------------------- #

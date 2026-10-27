@@ -21,7 +21,7 @@ export default async function LoginPage({
       title="Sign in to RobloxOps"
       subtitle="Manage commissions, agents and delivery from one pipeline."
       footer={
-        <Link href="/" className="text-brand hover:underline">
+        <Link href="/today?demo=true" className="text-brand hover:underline">
           Continue in demo mode
         </Link>
       }

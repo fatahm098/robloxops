@@ -29,6 +29,10 @@ logger = logging.getLogger("robloxops.bot")
 
 MAX_THREAD_NAME = 100
 THREAD_ARCHIVE_MINUTES = 10080  # 7 days
+DM_FALLBACK = (
+    "Hi! I'm the studio assistant. Please post in the studio's monitored "
+    "channel (for example #commissions) so I can open a ticket for you."
+)
 
 
 @dataclass(slots=True)
@@ -52,6 +56,33 @@ class BotRepo:
         if row is None:
             return None
         return ChannelTenant(row["id"], str(row["name"]), json_dict(row["settings"]))
+
+    async def tenants_for_guilds(self, guild_ids: list[str]) -> list[ChannelTenant]:
+        """Tenants whose linked guild is one of ``guild_ids`` (DM resolution)."""
+        if not guild_ids:
+            return []
+        rows = await self.pool.fetch(
+            "SELECT id, name, settings FROM tenants WHERE discord_guild_id = ANY($1::text[])",
+            guild_ids,
+        )
+        return [
+            ChannelTenant(row["id"], str(row["name"]), json_dict(row["settings"]))
+            for row in rows
+        ]
+
+    async def project_by_dm_channel(self, tenant_id: Any, channel_id: str) -> Any | None:
+        """Open project whose conversation runs in this DM channel, if any."""
+        return await self.pool.fetchrow(
+            """
+            SELECT id FROM projects
+            WHERE tenant_id = $1 AND discord_thread_id = $2
+              AND status NOT IN ('delivered', 'cancelled')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            tenant_id,
+            channel_id,
+        )
 
     @staticmethod
     def monitored_channels(settings: dict[str, Any]) -> set[str]:
@@ -154,6 +185,7 @@ class RobloxOpsBot(discord.Client):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guild_messages = True
+        intents.dm_messages = True
         super().__init__(intents=intents)
         self.settings = settings
         self.repo = repo
@@ -177,7 +209,10 @@ class RobloxOpsBot(discord.Client):
             logger.warning("slash command sync failed: %s", exc)
 
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot or message.guild is None:
+        if message.author.bot:
+            return
+        if message.guild is None:
+            await self._on_dm(message)
             return
         if not isinstance(message.channel, (discord.TextChannel, discord.Thread)):
             return
@@ -241,6 +276,91 @@ class RobloxOpsBot(discord.Client):
                 )
             if notified is None:
                 await message.channel.send(reply)
+
+    async def _on_dm(self, message: discord.Message) -> None:
+        """Handle a private message by mapping the author to a single tenant.
+
+        A DM carries no guild id, so the tenant is resolved from the studio
+        servers the author shares with the bot. Only an unambiguous match (the
+        author belongs to exactly one tenant's server) is accepted; otherwise
+        the user is pointed back to a monitored channel.
+        """
+        shared = await self._shared_guild_ids(message.author.id)
+        tenants = await self.repo.tenants_for_guilds(shared)
+        unique: dict[str, ChannelTenant] = {str(t.tenant_id): t for t in tenants}
+        if len(unique) != 1:
+            await self._dm_fallback(message)
+            return
+        tenant = next(iter(unique.values()))
+
+        dm_channel_id = str(message.channel.id)
+        existing = await self.repo.project_by_dm_channel(tenant.tenant_id, dm_channel_id)
+        kind = "conversation_continue" if existing is not None else "intake"
+
+        payload: dict[str, Any] = {
+            "tenant_id": str(tenant.tenant_id),
+            "channel_id": dm_channel_id,
+            "message_id": str(message.id),
+            "author_id": str(message.author.id),
+            "author_name": message.author.display_name,
+            "content": message.content,
+            "thread_id": dm_channel_id,
+        }
+
+        result = await self._call_worker(
+            "/intake" if kind == "intake" else "/conversation/continue", payload
+        )
+        try:
+            await self.repo.enqueue(tenant.tenant_id, kind, payload)
+        except Exception as exc:  # noqa: BLE001 - queue outage must not kill the gateway
+            logger.error("failed to enqueue %s job: %s", kind, exc)
+
+        if result is None:
+            return
+
+        if kind == "intake" and result.get("status") == "created" and result.get("intent") == "commission_request":
+            reply = result.get("reply") or f"Thanks! Reference {result.get('reference_code', '')}."
+            notified = None
+            if result.get("project_id") is not None:
+                # The DM channel doubles as the project's conversation channel.
+                await self.repo.link_thread(
+                    tenant.tenant_id, result["project_id"], dm_channel_id
+                )
+                notified = await self._notify(
+                    tenant, result["project_id"], "first_message", reply
+                )
+            if notified is None:
+                await message.channel.send(reply)
+        elif kind == "conversation_continue" and result.get("reply"):
+            reply = result["reply"]
+            notified = None
+            if result.get("project_id") is not None:
+                notified = await self._notify(
+                    tenant, result["project_id"], "status", reply
+                )
+            if notified is None:
+                await message.channel.send(reply)
+
+    async def _shared_guild_ids(self, user_id: int) -> list[str]:
+        """Ids of the bot's guilds that contain this Discord user."""
+        ids: list[str] = []
+        for guild in self.guilds:
+            member = guild.get_member(user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    member = None
+            if member is not None:
+                ids.append(str(guild.id))
+        return ids
+
+    async def _dm_fallback(self, message: discord.Message) -> None:
+        logger.info("DM from %s has no unambiguous tenant", message.author.id)
+        try:
+            await message.channel.send(DM_FALLBACK)
+        except discord.HTTPException as exc:
+            logger.warning("could not reply to DM: %s", exc)
 
     async def _open_thread(
         self, message: discord.Message, tenant: ChannelTenant, result: dict[str, Any]

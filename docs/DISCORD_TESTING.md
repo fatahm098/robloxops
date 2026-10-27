@@ -71,6 +71,28 @@ On ready it logs the bot name and every guild id it can see.
 - Post a message in the monitored channel → the bot enqueues an intake job and tries
   the FastAPI worker for an immediate reply.
 
+## 7. Private messages (DM)
+
+Customers can also DM the bot directly. A DM has no guild, so the bot resolves
+the tenant from the servers the author shares with it:
+
+- exactly **one** tenant server → the DM is handled as that studio's
+  conversation. The DM channel id is stored as the project's
+  `discord_thread_id`, so later replies continue the same project and outbound
+  delivery still works.
+- **zero or several** tenant servers → the bot replies with a short fallback
+  asking the user to post in a monitored channel (no worker call, no data
+  written).
+
+Requirements and limits:
+
+- Enable **Message Content Intent** (same as channels); the bot also turns on
+  the DM intent (`intents.dm_messages`).
+- The bot cannot start a DM: the customer must message first. Bots cannot be in
+  group DMs.
+- In production the bot is shared by all tenants, so one Discord user in two
+  studios is intentionally ambiguous — use channels for those customers.
+
 ## Notes
 
 - Slash commands only need the DB. The FastAPI worker (`uvicorn app.main:app`) is

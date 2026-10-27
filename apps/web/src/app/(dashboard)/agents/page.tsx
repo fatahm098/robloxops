@@ -4,6 +4,7 @@ import { Activity, Bot, Home, Pause, TriangleAlert } from "lucide-react";
 
 import { AgentToggleButton } from "@/components/agents/agent-toggle-button";
 import { PauseAllButton } from "@/components/agents/pause-all-button";
+import { OrchestratorPlayground } from "@/components/agents/orchestrator-playground";
 import { isDemoMode } from "@/lib/data";
 import { getAgentPauseState, getAgentStatuses } from "@/lib/insights";
 import type { AgentState } from "@/lib/types";
@@ -141,6 +142,8 @@ export default async function AgentsPage() {
           );
         })}
       </div>
+
+      <OrchestratorPlayground />
 
       <p className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-dim">
         Pausing sets <span className="text-ink-muted">tenants.settings.ai_paused</span> — messages keep arriving and queue, but no agent replies.

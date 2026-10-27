@@ -27,8 +27,13 @@ commit · working tree clean after each phase commit.
 | Assistant chat + 9 audited tools | done (`0016`) |
 | Portfolio drafts + X publishing | done (`0017`) |
 | `current_tenant_id()` reads `app_metadata` | done (`0018`) |
-| FastAPI worker: 16 endpoints | done |
-| Discord bot: channels, threads, `/status` `/brief` `/revision` `/help` | done, needs a real guild |
+| LangGraph Multi-Agent Orchestrator (Lexi intake, billing, task, revision, social) | done (`apps/worker/app/orchestrator`) |
+| Dynamic QRIS Indonesian Payment Gateway (EMVCo CRC16) | done (`apps/worker/app/orchestrator/qris_service.py`) |
+| Dynamic Self-Tooling Engine & AST Security Sandbox | done (`apps/worker/app/orchestrator/dynamic_tools.py`) |
+| Two-Layer Memory: Short-Term Checkpointer + Long-Term Roblox UGC Vector RAG | done (`apps/worker/app/orchestrator/memory.py`) |
+| Interactive Orchestrator & QRIS Playground in Web Dashboard | done (`apps/web/src/components/agents/orchestrator-playground.tsx`) |
+| FastAPI worker: 16 endpoints + 6 orchestrator endpoints | done |
+| Discord bot: channels, threads, DMs, `/status` `/brief` `/revision` `/help` | done, needs a real guild |
 | Next.js dashboard: 19 pages + 6 API routes | done |
 | CI: typecheck + build + pytest + compileall | done (`.github/workflows/ci.yml`) |
 | Browser end-to-end tests (Playwright, demo mode) | done — 13 tests |
@@ -49,11 +54,11 @@ npm run e2e                                         # 13 Playwright tests, demo 
 
 # worker (offline: fake DB + FakeLLM, no network)
 cd apps/worker
-.venv/Scripts/python.exe -m pytest -q               # 147 passed
+.venv/Scripts/python.exe -m pytest -q               # 151 passed
 .venv/Scripts/python.exe -m compileall -q app       # clean
 ```
 
-Last run of all of the above on 2026-10-20: green.
+Last run of all of the above on 2026-10-24: green.
 
 ## What exists
 

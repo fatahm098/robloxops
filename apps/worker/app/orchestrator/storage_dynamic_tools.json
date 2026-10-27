@@ -1,0 +1,32 @@
+{
+  "check_roblox_ugc_limits": {
+    "name": "check_roblox_ugc_limits",
+    "description": "Validasi batas teknis aset Roblox UGC (triangles/polygons dan texture resolution).",
+    "parameters": {
+      "asset_type": "string (accessory, clothing, avatar_item, game_prop)",
+      "estimated_triangles": "integer",
+      "texture_resolution": "string (e.g. 512x512, 1024x1024)"
+    },
+    "code": "\ndef check_roblox_ugc_limits(asset_type, estimated_triangles, texture_resolution=\"1024x1024\"):\n    max_tris = {\n        \"accessory\": 4000,\n        \"clothing\": 4000,\n        \"avatar_item\": 4000,\n        \"game_prop\": 10000,\n    }.get(asset_type.lower(), 4000)\n    \n    valid_tris = estimated_triangles <= max_tris\n    valid_tex = texture_resolution in [\"256x256\", \"512x512\", \"1024x1024\"]\n    \n    return {\n        \"valid\": valid_tris and valid_tex,\n        \"max_triangles_allowed\": max_tris,\n        \"current_triangles\": estimated_triangles,\n        \"triangle_status\": \"Lolos\" if valid_tris else f\"Melebihi batas {estimated_triangles}/{max_tris}\",\n        \"texture_status\": \"Valid\" if valid_tex else \"Ukuran tekstur harus 512x512 atau 1024x1024\",\n    }\n",
+    "author": "system"
+  },
+  "convert_robux_to_idr": {
+    "name": "convert_robux_to_idr",
+    "description": "Konversi nilai Robux ke Rupiah berdasarkan kurs DevEx resmi Roblox (kurs ~$0.0038/R$ * kurs USD/IDR).",
+    "parameters": {
+      "robux_amount": "integer"
+    },
+    "code": "\ndef convert_robux_to_idr(robux_amount, usd_to_idr_rate=16000):\n    # Roblox DevEx rate is approx $0.0038 per 1 Robux\n    usd_val = robux_amount * 0.0038\n    idr_val = int(usd_val * usd_to_idr_rate)\n    return {\n        \"robux\": robux_amount,\n        \"usd_equivalent\": round(usd_val, 2),\n        \"idr_equivalent\": idr_val,\n        \"idr_formatted\": f\"Rp {idr_val:,}\".replace(\",\", \".\")\n    }\n",
+    "author": "system"
+  },
+  "calculate_rush_fee": {
+    "name": "calculate_rush_fee",
+    "description": "Calculate 30% rush fee for Roblox asset priority delivery",
+    "parameters": {
+      "base_price": "int",
+      "is_rush": "bool"
+    },
+    "code": "\ndef calculate_rush_fee(base_price, is_rush=True):\n    fee = int(base_price * 0.3) if is_rush else 0\n    return {\"total\": base_price + fee, \"fee\": fee}\n",
+    "author": "ai_agent"
+  }
+}

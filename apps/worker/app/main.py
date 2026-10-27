@@ -504,6 +504,9 @@ async def portfolio_reject(
 
 app.include_router(router)
 
+from app.orchestrator.router import router as orchestrator_router
+app.include_router(orchestrator_router)
+
 
 if __name__ == "__main__":
     import uvicorn

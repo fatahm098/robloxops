@@ -38,6 +38,7 @@ interface NavItem {
 
 const designerCore: NavItem[] = [
   { label: "Beranda Desainer", href: "/today", icon: LayoutGrid },
+  { label: "AI Orchestrator & QRIS", href: "/agents", icon: Bot, badge: "LIVE", badgeTone: "live" },
   { label: "Asisten", href: "/assistant", icon: Sparkles },
   { label: "Antrian Tugas", href: "/tasks", icon: ListChecks, badgeTone: "accent" },
   { label: "Proyek & Brief AI", href: "/projects", icon: FolderKanban, badgeTone: "count" },

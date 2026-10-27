@@ -16,7 +16,7 @@ worker test suite. Every dashboard surface renders live Supabase data when it is
 configured and falls back to `src/lib/mock.ts` when it is not.
 
 Last verified **2026-10-20**: `tsc --noEmit` clean, `next build` succeeds,
-**147 worker tests pass**, **13 Playwright tests pass**, and
+**151 worker tests pass**, **13 Playwright tests pass**, and
 `npm run scan:secrets:all` reports no findings.
 
 | Area | State |

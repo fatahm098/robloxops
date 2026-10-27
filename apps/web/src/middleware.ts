@@ -4,15 +4,28 @@ import { NextResponse } from "next/server";
 
 import { updateSession } from "@/lib/supabase/middleware";
 
-const PUBLIC_PATHS = ["/login", "/signup", "/auth/callback", "/api/stripe/webhook"];
+const PUBLIC_PATHS = [
+  "/login",
+  "/signup",
+  "/auth/callback",
+  "/api/stripe/webhook",
+  "/api/orchestrator",
+];
 
 export async function middleware(request: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  // Demo mode: no Supabase configured, so every route is open.
-  if (!url || !anonKey) {
-    return NextResponse.next({ request });
+  const demoCookie = request.cookies.get("demo_mode")?.value === "true";
+  const demoParam = request.nextUrl.searchParams.get("demo") === "true";
+
+  // Demo mode: no Supabase configured, or demo_mode cookie/param present.
+  if (!url || !anonKey || demoCookie || demoParam) {
+    const res = NextResponse.next({ request });
+    if (demoParam) {
+      res.cookies.set("demo_mode", "true", { path: "/" });
+    }
+    return res;
   }
 
   const response = await updateSession(request);
