@@ -61,8 +61,6 @@ def extract_brief_details(text: str, existing: Dict[str, Any]) -> Dict[str, Any]
         data["asset_type"] = "game_asset"
     elif any(k in pesan for k in ["partikel", "vfx", "fx", "aura"]):
         data["asset_type"] = "fx"
-    elif "asset_type" not in data:
-        data["asset_type"] = "accessory"
 
     # 2. Style detection
     if "cyberpunk" in pesan or "futuristic" in pesan or "neon" in pesan:
@@ -73,8 +71,6 @@ def extract_brief_details(text: str, existing: Dict[str, Any]) -> Dict[str, Any]
         data["style"] = "Realistic Tactical"
     elif "low poly" in pesan or "kartun" in pesan:
         data["style"] = "Low Poly Cartoon"
-    elif "style" not in data:
-        data["style"] = "Custom Stylized"
 
     # 3. Colors / Palettes
     colors = []
@@ -96,10 +92,11 @@ def extract_brief_details(text: str, existing: Dict[str, Any]) -> Dict[str, Any]
     if urls:
         data["references"] = list(set((data.get("references") or []) + urls))
 
-    # 5. Technical specs
-    data["poly_budget"] = UGC_POLY_LIMITS.get(data.get("asset_type", "accessory"), 4000)
-    data["texture_res"] = "1024x1024" if data.get("asset_type") != "clothing" else "585x559"
-    data["estimated_price_idr"] = BASE_PRICING.get(data.get("asset_type", "accessory"), 250_000)
+    # 5. Technical specs (only if asset_type has been identified)
+    if data.get("asset_type"):
+        data["poly_budget"] = UGC_POLY_LIMITS.get(data["asset_type"], 4000)
+        data["texture_res"] = "1024x1024" if data["asset_type"] != "clothing" else "585x559"
+        data["estimated_price_idr"] = BASE_PRICING.get(data["asset_type"], 250_000)
 
     return data
 
