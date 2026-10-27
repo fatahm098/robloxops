@@ -329,7 +329,7 @@ async def handle_continue(db: Any, llm: LLMProtocol, req: ContinueRequest) -> Co
         context={"project": dict(project) if project is not None else {}},
     )
 
-    if thread_intent.intent == "status_inquiry":
+    if thread_intent.intent == "status_inquiry" and status_before not in ("intake", "briefing"):
         task = None
         try:
             task = await db.fetchrow(tenant_id, TASKS_BY_PROJECT_SQL, tenant_id, project_id)

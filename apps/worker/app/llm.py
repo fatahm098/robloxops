@@ -321,7 +321,7 @@ class OpenAICompatibleLLM:
             f"You classify customer messages in an ongoing commission thread for {tenant_name}, a Roblox design studio.\n"
             f"Current project status: {project_status or 'unknown'}.\n"
             "Labels:\n"
-            "- status_inquiry: Asking about progress, ETA, completion time, or how the design is coming along.\n"
+            "- status_inquiry: Asking specifically about 3D modeling progress or completion ETA (e.g. 'sampai mana progresnya', 'kapan selesai', 'sudah jadi belum'). Do NOT classify opinion/suggestion questions (e.g. 'menurut kakak gimana', 'menurut kamu apa yang bagus', 'gimana nih') as status_inquiry.\n"
             "- approval: Customer is approving, liking, accepting, or signing off on the preview/design (e.g. 'approved', 'looks great', 'acc', 'bagus', 'love it', 'deal').\n"
             "- revision_request: Asking for changes, edits, tweaks, color adjustments, or modifications to the design.\n"
             "- payment_inquiry: Asking about price, payment method, Robux, invoice, gamepass, group funds, or how to pay.\n"

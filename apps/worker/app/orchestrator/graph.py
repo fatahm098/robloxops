@@ -133,18 +133,8 @@ def process_customer_turn(
     state_input["customer_name"] = customer_name
     state_input["discord_user_id"] = discord_user_id
     state_input["tenant_id"] = tenant_id
-
-    # Append user turn to messages list
-    history = state_input.get("messages") or []
-    history.append({"role": "user", "content": message})
-    state_input["messages"] = history
+    state_input["messages"] = [{"role": "user", "content": message}]
 
     # Run graph with LangGraph thread memory checkpointer
     result = robloxops_graph.invoke(state_input, config=config)
-
-    # Append agent reply to messages list
-    agent_reply = result.get("reply_to_customer") or "Ada yang bisa saya bantu terkait aset Roblox Anda?"
-    history.append({"role": "assistant", "content": agent_reply})
-    result["messages"] = history
-
     return result
