@@ -14,7 +14,7 @@ export function QaPreview({
   project,
   disabled = false,
 }: {
-  project: ProjectSummary;
+  project?: ProjectSummary | null;
   disabled?: boolean;
 }) {
   const router = useRouter();
@@ -22,16 +22,27 @@ export function QaPreview({
   const [busy, setBusy] = useState<ActionKind | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
+  if (!project) {
+    return (
+      <section className="panel p-6 text-center text-ink-muted">
+        <p className="font-mono text-[11px] uppercase tracking-wider text-ink-dim">QA Check Queue</p>
+        <p className="mt-1 text-[13px] text-ink">Tidak ada proyek yang sedang menunggu Quality Check saat ini.</p>
+      </section>
+    );
+  }
+
   const hasScore = project.qaScore !== undefined;
   const scoreMax = project.qaScoreMax ?? 100;
   const specDetail = [project.assetDetail, project.specLine].filter(Boolean).join(" · ");
 
+  const targetProject = project;
+
   function run(status: ActionKind) {
-    if (disabled || pending) return;
+    if (disabled || pending || !targetProject) return;
     setBusy(status);
     setMessage(null);
     startTransition(async () => {
-      const result = await updateProjectStatus(project.id, status);
+      const result = await updateProjectStatus(targetProject.id, status);
       setMessage(result.message);
       if (result.ok) router.refresh();
       setBusy(null);

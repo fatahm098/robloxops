@@ -140,7 +140,7 @@ export default async function OverviewPage() {
             totalActive={stats.activeProjects}
             counts={statusCounts}
           />
-          <QaPreview project={qaReady} disabled={isDemoMode} />
+          {qaReady ? <QaPreview project={qaReady} disabled={isDemoMode} /> : null}
         </div>
 
         <div className="flex flex-col gap-4">
