@@ -527,16 +527,38 @@ async def handle_continue(db: Any, llm: LLMProtocol, req: ContinueRequest) -> Co
     if refreshed is None:
         return ContinueResult(status="escalated", project_id=project_id)
 
-    context = {"missing_fields": refreshed.missing_fields, "reference_code": ref_code}
-    purpose = "clarification" if refreshed.missing_fields else "brief_updated"
-    if status_before in ("customer_review", "delivered", "approved"):
-        purpose = "revision"
-    try:
-        reply = await llm.draft_message(
-            tenant_name=tenant_name, purpose=purpose, context=context, tone=tone
-        )
-    except LLMError:
-        reply = "Thanks — I've updated your brief."
+    reply = ""
+    # In intake/briefing stage, prefer using conversational orchestrator (Lexi)
+    # so customer gets a natural, multi-turn Indonesian chat that answers questions like 'apa artinya?'
+    if status_before in ("intake", "briefing"):
+        try:
+            from app.orchestrator.graph import process_customer_turn
+            session_thread_id = str(req.thread_id or project_id)
+            orch_state = process_customer_turn(
+                message=content,
+                customer_name=req.author_name or "Kak",
+                discord_user_id=session_thread_id,
+                tenant_id=str(tenant_id),
+            )
+            reply = orch_state.get("reply_to_customer") or ""
+        except Exception as exc:
+            logger.warning("orchestrator turn in brief continue failed: %s", exc)
+
+    if not reply:
+        context = {
+            "customer_message": content,
+            "missing_fields": refreshed.missing_fields,
+            "reference_code": ref_code,
+        }
+        purpose = "clarification" if refreshed.missing_fields else "brief_updated"
+        if status_before in ("customer_review", "delivered", "approved"):
+            purpose = "revision"
+        try:
+            reply = await llm.draft_message(
+                tenant_name=tenant_name, purpose=purpose, context=context, tone=tone
+            )
+        except LLMError:
+            reply = f"Halo Kak! Catatan untuk {ref_code} sudah kami perbarui ya. Ada lagi detail yang ingin ditambahkan?"
 
     return ContinueResult(
         status="processed",

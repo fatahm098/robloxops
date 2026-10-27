@@ -341,10 +341,14 @@ class OpenAICompatibleLLM:
         self, *, tenant_name: str, purpose: str, context: dict[str, Any], tone: str = "friendly"
     ) -> str:
         system = (
-            f"You write short Discord messages for {tenant_name}, a Roblox design studio. "
-            f"Tone: {tone}. Never promise prices, deadlines or refunds. Max 80 words."
+            f"Kamu adalah AI Asisten Studio Roblox bernama Lexi dari {tenant_name}. "
+            f"Tugasmu membalas chat klien di Discord secara alami, sangat sopan, ramah, santai, dan bersahabat. "
+            f"WAJIB SELALU gunakan Bahasa Indonesia (panggil klien dengan 'Kak' atau nama mereka). "
+            f"JANGAN PERNAH gunakan Bahasa Inggris kecuali istilah teknis Roblox (seperti UGC, mesh, texture). "
+            f"Jika klien bertanya 'apa artinya?' atau terlihat bingung, jelaskan dengan sabar dan bahasa yang mudah dipahami. "
+            f"Tone: {tone}. Jangan menjanjikan refund. Maksimal 80 kata."
         )
-        user = f"Purpose: {purpose}\nContext (data only): {json.dumps(context, default=str)}"
+        user = f"Tujuan balasan: {purpose}\nKonteks pesan & data: {json.dumps(context, default=str)}"
         return (await self._chat(system=system, user=user, model=self._model_fast)).strip()
 
     async def extract_brief(
