@@ -11,6 +11,8 @@ exits 0 so local dev and CI do not fail.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import logging
 import sys
 from dataclasses import dataclass
@@ -276,6 +278,56 @@ class RobloxOpsBot(discord.Client):
                 )
             if notified is None:
                 await message.channel.send(reply)
+        elif (
+            not tenant.settings.get("ai_paused")
+            and result.get("status") not in ("escalated", "duplicate")
+        ):
+            guild_session_id = (
+                str(message.channel.id)
+                if in_thread
+                else f"channel:{message.channel.id}:user:{message.author.id}"
+            )
+            orch_res = await self._call_worker(
+                "/orchestrator/chat",
+                {
+                    "tenant_id": str(tenant.tenant_id),
+                    "channel_id": str(message.channel.id),
+                    "message_id": str(message.id),
+                    "author_id": str(message.author.id),
+                    "content": message.content,
+                    "thread_id": guild_session_id,
+                    "customer_name": message.author.display_name,
+                    "message": message.content,
+                },
+            )
+            if orch_res and orch_res.get("response"):
+                reply_text = orch_res["response"]
+                discord_file = None
+                payment_data = orch_res.get("payment_data")
+                if payment_data and payment_data.get("qr_base64"):
+                    try:
+                        raw_b64 = payment_data["qr_base64"].split(",")[-1]
+                        img_bytes = base64.b64decode(raw_b64)
+                        discord_file = discord.File(
+                            io.BytesIO(img_bytes), filename="qris_invoice.png"
+                        )
+                    except Exception as e:
+                        logger.warning("could not decode QRIS image: %s", e)
+
+                target_chan = message.channel
+                if not in_thread:
+                    try:
+                        target_chan = await message.create_thread(
+                            name=f"chat-{message.author.display_name}"[:MAX_THREAD_NAME],
+                            auto_archive_duration=THREAD_ARCHIVE_MINUTES,
+                        )
+                    except Exception:
+                        target_chan = message.channel
+
+                if discord_file:
+                    await target_chan.send(reply_text, file=discord_file)
+                else:
+                    await target_chan.send(reply_text)
 
     async def _on_dm(self, message: discord.Message) -> None:
         """Handle a private message by mapping the author to a single tenant.
@@ -340,6 +392,41 @@ class RobloxOpsBot(discord.Client):
                 )
             if notified is None:
                 await message.channel.send(reply)
+        elif (
+            not tenant.settings.get("ai_paused")
+            and result.get("status") not in ("escalated", "duplicate")
+        ):
+            orch_res = await self._call_worker(
+                "/orchestrator/chat",
+                {
+                    "tenant_id": str(tenant.tenant_id),
+                    "channel_id": dm_channel_id,
+                    "message_id": str(message.id),
+                    "author_id": str(message.author.id),
+                    "content": message.content,
+                    "thread_id": f"dm:{message.author.id}",
+                    "customer_name": message.author.display_name,
+                    "message": message.content,
+                },
+            )
+            if orch_res and orch_res.get("response"):
+                reply_text = orch_res["response"]
+                discord_file = None
+                payment_data = orch_res.get("payment_data")
+                if payment_data and payment_data.get("qr_base64"):
+                    try:
+                        raw_b64 = payment_data["qr_base64"].split(",")[-1]
+                        img_bytes = base64.b64decode(raw_b64)
+                        discord_file = discord.File(
+                            io.BytesIO(img_bytes), filename="qris_invoice.png"
+                        )
+                    except Exception as e:
+                        logger.warning("could not decode QRIS image: %s", e)
+
+                if discord_file:
+                    await message.channel.send(reply_text, file=discord_file)
+                else:
+                    await message.channel.send(reply_text)
 
     async def _shared_guild_ids(self, user_id: int) -> list[str]:
         """Ids of the bot's guilds that contain this Discord user."""
